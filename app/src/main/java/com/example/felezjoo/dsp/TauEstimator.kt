@@ -1,5 +1,6 @@
 package com.example.felezjoo.dsp
 
+import com.example.felezjoo.models.DetectionCalibration
 import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.sqrt
@@ -35,6 +36,32 @@ data class TauFitResult(
  * Completely eliminates arbitrary slope constants and ungrounded formulas.
  */
 object TauEstimator {
+
+    /**
+     * Estimates tau using the explicit DetectionCalibration configuration.
+     */
+    fun estimateTau(
+        waveform: DoubleArray,
+        sampleSpacingUs: Double,
+        startIndex: Int,
+        endIndex: Int,
+        noiseFloor: Double,
+        calibration: DetectionCalibration,
+        saturationThreshold: Double = Double.MAX_VALUE,
+        minSamples: Int = 4
+    ): TauFitResult = estimateTau(
+        waveform = waveform,
+        sampleSpacingUs = sampleSpacingUs,
+        startIndex = startIndex,
+        endIndex = endIndex,
+        noiseFloor = noiseFloor,
+        minSamples = minSamples,
+        minR2 = calibration.minTauR2,
+        saturationThreshold = saturationThreshold,
+        minTauUs = calibration.minTauUs,
+        maxTauUs = calibration.maxTauUs,
+        noiseThresholdMultiplier = calibration.noiseThresholdMultiplier
+    )
 
     /**
      * Estimates tau by performing linear regression of ln(V(t)) vs t.
@@ -119,8 +146,8 @@ object TauEstimator {
                 }
             }
 
-            // Outlier criterion: residual error exceeds 2.5 standard errors
-            if (worstIdx != -1 && maxAbsRes > (2.5 * firstFit.rmse)) {
+            // Outlier criterion: residual error exceeds 2.5 standard errors, and remaining points satisfy minSamples
+            if (worstIdx != -1 && maxAbsRes > (2.5 * firstFit.rmse) && (times.size - 1 >= minSamples)) {
                 val prunedTimes = mutableListOf<Double>()
                 val prunedLogs = mutableListOf<Double>()
                 for (i in times.indices) {

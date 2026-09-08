@@ -96,7 +96,10 @@ data class FeatureVector(
     val dtUs: Double = 0.0,
     val adcResolution: Int = 10,
     val dspVersion: String = "DSP-3.0-PHYS"
-) : Serializable
+) : Serializable {
+    // Explicit semantic alias for absolute residual mean
+    val meanAbsoluteResidual: Double get() = meanAbsolute
+}
 
 data class TargetEvent(
     val id: String = java.util.UUID.randomUUID().toString(),

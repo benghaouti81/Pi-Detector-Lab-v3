@@ -8,6 +8,7 @@ import com.example.felezjoo.dsp.SafeGroundTracker
 import com.example.felezjoo.dsp.TauEstimator
 import com.example.felezjoo.models.DecayBlock
 import com.example.felezjoo.models.DspProfile
+import com.example.felezjoo.models.GroundSpeed
 import com.example.felezjoo.models.SamplingConfiguration
 import com.example.felezjoo.models.TargetClassification
 import com.example.felezjoo.models.WaveformPolarity
@@ -200,19 +201,69 @@ class FelezJooDspAndProtocolTest {
         simEngine.targetType = SimulationTargetType.BRASS_RELIC
         val (block, _) = simEngine.generateSingleBlock()
 
-        // Capture snapshot before read-only call
+        // 1. Process one block with updateState = true to establish active tracking state
+        pipeline.processBlock(block, DspProfile.STABLE, updateState = true)
+
+        // Capture full snapshot before read-only operations
         val initialGround = pipeline.groundCurve.clone()
         val initialBaseline = pipeline.baselineCurve.clone()
+        val initialRecentScores = pipeline.getRecentScores()
+        val initialQuietFrames = pipeline.safeGroundTracker.quietFramesCount
+        val initialIsFrozen = pipeline.safeGroundTracker.isFrozen
+        val initialFreezeReason = pipeline.safeGroundTracker.lastFreezeReason
+        val initialTrackerState = pipeline.targetTracker.state
+        val initialCandidateCount = pipeline.targetTracker.currentCandidateCount
+        val initialQuietCount = pipeline.targetTracker.currentQuietCount
+        val initialActiveEvent = pipeline.targetTracker.currentActiveEvent
 
-        // Call with updateState = false (inspection mode)
-        val result = pipeline.processBlock(block, DspProfile.STABLE, updateState = false)
+        // 2. Execute processBlock with updateState = false across multiple profiles and diverse targets
+        val profilesToTest = listOf(
+            DspProfile.ORIGINAL_LIKE,
+            DspProfile.STABLE,
+            DspProfile.MAXIMUM_DEPTH,
+            DspProfile.FAST_RESPONSE,
+            DspProfile.MINERALIZED_GROUND,
+            DspProfile.EXPERIMENTAL_A
+        )
 
-        assertNotNull(result)
-        // Assert ground and baseline were NOT mutated
-        for (i in initialGround.indices) {
-            assertEquals("Ground model must not mutate during read-only call", initialGround[i], pipeline.groundCurve[i], 0.0001)
-            assertEquals("Baseline model must not mutate during read-only call", initialBaseline[i], pipeline.baselineCurve[i], 0.0001)
+        val targetTypesToTest = listOf(
+            SimulationTargetType.NO_TARGET,
+            SimulationTargetType.IRON_NAIL,
+            SimulationTargetType.COPPER_COIN,
+            SimulationTargetType.SMALL_GOLD_NUGGET,
+            SimulationTargetType.RUSTY_CAN
+        )
+
+        for (target in targetTypesToTest) {
+            simEngine.targetType = target
+            val (testBlock, _) = simEngine.generateSingleBlock()
+            for (p in profilesToTest) {
+                val res = pipeline.processBlock(testBlock, p, updateState = false)
+                assertNotNull("ProcessBlock result must not be null in read-only mode", res)
+            }
         }
+
+        // 3. Assert absolutely ZERO mutation occurred in any adaptive state
+        // Baseline & Ground curves
+        for (i in initialGround.indices) {
+            assertEquals("Ground model must not mutate during read-only calls (index $i)", initialGround[i], pipeline.groundCurve[i], 1e-9)
+            assertEquals("Baseline model must not mutate during read-only calls (index $i)", initialBaseline[i], pipeline.baselineCurve[i], 1e-9)
+        }
+
+        // Recent scores history
+        assertEquals("recentScores list size must remain unchanged", initialRecentScores.size, pipeline.getRecentScores().size)
+        assertEquals("recentScores history must not mutate", initialRecentScores, pipeline.getRecentScores())
+
+        // SafeGroundTracker state
+        assertEquals("SafeGroundTracker quietFramesCount must not mutate", initialQuietFrames, pipeline.safeGroundTracker.quietFramesCount)
+        assertEquals("SafeGroundTracker isFrozen must not mutate", initialIsFrozen, pipeline.safeGroundTracker.isFrozen)
+        assertEquals("SafeGroundTracker lastFreezeReason must not mutate", initialFreezeReason, pipeline.safeGroundTracker.lastFreezeReason)
+
+        // TemporalTargetTracker state
+        assertEquals("TemporalTargetTracker state must not mutate", initialTrackerState, pipeline.targetTracker.state)
+        assertEquals("TemporalTargetTracker candidateCount must not mutate", initialCandidateCount, pipeline.targetTracker.currentCandidateCount)
+        assertEquals("TemporalTargetTracker quietCount must not mutate", initialQuietCount, pipeline.targetTracker.currentQuietCount)
+        assertEquals("TemporalTargetTracker activeEvent must not mutate", initialActiveEvent, pipeline.targetTracker.currentActiveEvent)
     }
 
     @Test
@@ -403,5 +454,141 @@ class FelezJooDspAndProtocolTest {
             "Custom calibration must dynamically affect score without hardcoded constants (default=${rDefault.featureVector.targetScore}, custom=${rCustom.featureVector.targetScore})",
             rCustom.featureVector.targetScore < rDefault.featureVector.targetScore
         )
+    }
+
+    @Test
+    fun testRealHardwareEts14x5RoundTrip() {
+        val config = SamplingConfiguration(
+            pulsesPerFrame = 14,
+            samplesPerPulse = 5,
+            sampleCount = 70,
+            sampleSpacingUs = 1.6
+        )
+
+        assertEquals("Pulses per frame must be 14", 14, config.pulsesPerFrame)
+        assertEquals("Samples per pulse must be 5", 5, config.samplesPerPulse)
+        assertEquals("Total sample count must be 70", 70, config.sampleCount)
+
+        // Explicit formula verification: reconstructedIndex = pulseIndex + sampleSlot * pulsesPerFrame
+        for (pulseIndex in 0 until 14) {
+            for (sampleSlot in 0 until 5) {
+                val expectedReconstructed = pulseIndex + sampleSlot * 14
+                val actualReconstructed = EtsReconstruction.getChronologicalIndex(pulseIndex, sampleSlot, config)
+                assertEquals(
+                    "Reconstructed index must follow pulseIndex + sampleSlot * pulsesPerFrame",
+                    expectedReconstructed,
+                    actualReconstructed
+                )
+
+                val (p, s) = EtsReconstruction.getPulseAndSlot(actualReconstructed, config)
+                assertEquals("Reverse pulse index mapping must match", pulseIndex, p)
+                assertEquals("Reverse sample slot mapping must match", sampleSlot, s)
+            }
+        }
+
+        // Test PULSE_FIRST -> CHRONOLOGICAL
+        // Transport order: 14 pulses of 5 samples each = 70 samples
+        val pulseFirstData = IntArray(70) { it }
+        val chronoData = EtsReconstruction.toChronological(pulseFirstData, config, EtsTransportOrder.PULSE_FIRST)
+        assertEquals(70, chronoData.size)
+
+        // Verify that sample at pulse p, slot s appears at chrono index (p + s * 14)
+        for (p in 0 until 14) {
+            for (s in 0 until 5) {
+                val transportIdx = p * 5 + s
+                val chronoIdx = p + s * 14
+                assertEquals(
+                    "Chrono sample at $chronoIdx must come from transport $transportIdx",
+                    pulseFirstData[transportIdx],
+                    chronoData[chronoIdx]
+                )
+            }
+        }
+
+        // Test CHRONOLOGICAL -> PULSE_FIRST round-trip
+        val reconstructedPulseFirst = EtsReconstruction.toPulseFirst(chronoData, config)
+        assertTrue(
+            "CHRONOLOGICAL -> PULSE_FIRST round-trip must be lossless",
+            pulseFirstData.contentEquals(reconstructedPulseFirst)
+        )
+
+        // Reverse round-trip: Arbitrary chronological decay waveform -> PULSE_FIRST -> CHRONOLOGICAL
+        val arbitraryChrono = IntArray(70) { 1023 - it * 12 }
+        val transport = EtsReconstruction.toPulseFirst(arbitraryChrono, config)
+        val reconstructedChrono = EtsReconstruction.toChronological(transport, config, EtsTransportOrder.PULSE_FIRST)
+        assertTrue(
+            "PULSE_FIRST -> CHRONOLOGICAL round-trip must be lossless",
+            arbitraryChrono.contentEquals(reconstructedChrono)
+        )
+    }
+
+    @Test
+    fun testGroundConfigIsSingleSourceOfTruth() {
+        assertEquals(0.005, DspProfile.MAXIMUM_DEPTH.groundConfig.alpha, 1e-6)
+        assertEquals(GroundSpeed.SLOW, DspProfile.MAXIMUM_DEPTH.groundConfig.speed)
+        assertEquals(0.005, DspProfile.MAXIMUM_DEPTH.groundAlpha, 1e-6)
+        assertEquals(GroundSpeed.SLOW, DspProfile.MAXIMUM_DEPTH.groundSpeed)
+
+        assertEquals(0.08, DspProfile.FAST_RESPONSE.groundConfig.alpha, 1e-6)
+        assertEquals(GroundSpeed.FAST, DspProfile.FAST_RESPONSE.groundConfig.speed)
+        assertEquals(0.08, DspProfile.FAST_RESPONSE.groundAlpha, 1e-6)
+        assertEquals(GroundSpeed.FAST, DspProfile.FAST_RESPONSE.groundSpeed)
+
+        assertEquals(0.05, DspProfile.MINERALIZED_GROUND.groundConfig.alpha, 1e-6)
+        assertEquals(GroundSpeed.CUSTOM, DspProfile.MINERALIZED_GROUND.groundConfig.speed)
+        assertEquals(0.05, DspProfile.MINERALIZED_GROUND.groundAlpha, 1e-6)
+        assertEquals(GroundSpeed.CUSTOM, DspProfile.MINERALIZED_GROUND.groundSpeed)
+
+        // copyWithGroundSpeed updates both alpha and speed in groundConfig
+        val updated = DspProfile.STABLE.copyWithGroundSpeed(GroundSpeed.FAST)
+        assertEquals(0.08, updated.groundConfig.alpha, 1e-6)
+        assertEquals(GroundSpeed.FAST, updated.groundConfig.speed)
+        assertEquals(0.08, updated.groundAlpha, 1e-6)
+        assertEquals(GroundSpeed.FAST, updated.groundSpeed)
+
+        // copyWithGroundAlpha updates both alpha and speed in groundConfig
+        val customAlpha = DspProfile.STABLE.copyWithGroundAlpha(0.005)
+        assertEquals(0.005, customAlpha.groundConfig.alpha, 1e-6)
+        assertEquals(GroundSpeed.SLOW, customAlpha.groundConfig.speed)
+        assertEquals(0.005, customAlpha.groundAlpha, 1e-6)
+        assertEquals(GroundSpeed.SLOW, customAlpha.groundSpeed)
+    }
+
+    @Test
+    fun testTauEstimatorOutlierRejection() {
+        val dt = 1.6
+        val sampleCount = 30
+        val trueTau = 20.0
+        val a0 = 200.0
+
+        // Pure decay
+        val cleanWaveform = DoubleArray(sampleCount) { i ->
+            val t = i * dt
+            a0 * kotlin.math.exp(-t / trueTau)
+        }
+
+        // Add an isolated spike/glitch outlier in the middle
+        val corruptedWaveform = cleanWaveform.clone()
+        val glitchIndex = 12
+        corruptedWaveform[glitchIndex] = corruptedWaveform[glitchIndex] * 4.0 // 4x outlier spike
+
+        val cal = com.example.felezjoo.models.DetectionCalibration(
+            minTauUs = 1.0,
+            maxTauUs = 300.0,
+            minTauR2 = 0.85
+        )
+
+        val result = com.example.felezjoo.dsp.TauEstimator.estimateTau(
+            waveform = corruptedWaveform,
+            sampleSpacingUs = dt,
+            startIndex = 4,
+            endIndex = 26,
+            noiseFloor = 1.0,
+            calibration = cal
+        )
+
+        assertTrue("Tau fit must succeed despite isolated outlier glitch", result.isAvailable)
+        assertEquals("Fitted tau after conservative outlier rejection must remain close to true tau", trueTau, result.tauUs, 2.5)
+        assertTrue("R^2 must be high after rejecting outlier", result.rSquared >= 0.85)
     }
 }

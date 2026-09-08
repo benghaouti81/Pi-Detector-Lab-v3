@@ -169,6 +169,23 @@ data class DspProfile(
         )
     }
 
+    fun copyWithGroundAlpha(alpha: Double): DspProfile {
+        val spd = when {
+            alpha <= 0.0 -> GroundSpeed.OFF
+            kotlin.math.abs(alpha - GroundSpeed.SLOW.defaultAlpha) < 1e-4 -> GroundSpeed.SLOW
+            kotlin.math.abs(alpha - GroundSpeed.NORMAL.defaultAlpha) < 1e-4 -> GroundSpeed.NORMAL
+            kotlin.math.abs(alpha - GroundSpeed.FAST.defaultAlpha) < 1e-4 -> GroundSpeed.FAST
+            else -> GroundSpeed.CUSTOM
+        }
+        return copy(
+            groundConfig = groundConfig.copy(
+                enabled = alpha > 0.0,
+                speed = spd,
+                alpha = alpha
+            )
+        )
+    }
+
     companion object {
         val ORIGINAL_LIKE = DspProfile(
             id = "profile_original_like",
@@ -217,7 +234,7 @@ data class DspProfile(
             regionBEndUs = 60.8,
             regionCStartUs = 60.8,
             regionCEndUs = 105.0,
-            groundConfig = GroundTrackingConfig(alpha = 0.005), // SLOW
+            groundConfig = GroundTrackingConfig(speed = GroundSpeed.SLOW, alpha = 0.005),
             targetThreshold = 22.0,
             confidenceThreshold = 35.0,
             weightSignal = 0.20,
@@ -239,7 +256,7 @@ data class DspProfile(
             regionBEndUs = 32.0,
             regionCStartUs = 32.0,
             regionCEndUs = 60.0,
-            groundConfig = GroundTrackingConfig(alpha = 0.08), // FAST
+            groundConfig = GroundTrackingConfig(speed = GroundSpeed.FAST, alpha = 0.08),
             weightSignal = 0.40,
             weightSnr = 0.20,
             weightArea = 0.20,
@@ -259,7 +276,7 @@ data class DspProfile(
             regionBEndUs = 56.0,
             regionCStartUs = 56.0,
             regionCEndUs = 96.0,
-            groundConfig = GroundTrackingConfig(alpha = 0.05, earlyMultiplier = 0.15, freezeScore = 32.0),
+            groundConfig = GroundTrackingConfig(speed = GroundSpeed.CUSTOM, alpha = 0.05, earlyMultiplier = 0.15, freezeScore = 32.0),
             targetThreshold = 40.0,
             confidenceThreshold = 55.0,
             weightSignal = 0.15,

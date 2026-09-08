@@ -32,6 +32,10 @@ class TemporalTargetTracker {
     private var quietCount = 0
     private var activeEvent: TargetEvent? = null
 
+    val currentCandidateCount: Int get() = candidateCount
+    val currentQuietCount: Int get() = quietCount
+    val currentActiveEvent: TargetEvent? get() = activeEvent
+
     val requiredCandidateFrames = 2
     val requiredQuietFramesToLose = 3
 

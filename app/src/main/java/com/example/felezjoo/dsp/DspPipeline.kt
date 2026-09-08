@@ -88,6 +88,10 @@ class DspPipeline {
         targetTracker.reset()
     }
 
+    fun getRecentScores(): List<Double> = synchronized(stateLock) {
+        recentScores.toList()
+    }
+
     /**
      * Executes the complete DSP pipeline on an incoming decay acquisition block.
      *
@@ -262,11 +266,8 @@ class DspPipeline {
             startIndex = validStart,
             endIndex = validEnd,
             noiseFloor = noiseFloor,
-            noiseThresholdMultiplier = cal.noiseThresholdMultiplier,
-            minR2 = cal.minTauR2,
-            saturationThreshold = (config.adcFullScale - 5.0),
-            minTauUs = cal.minTauUs,
-            maxTauUs = cal.maxTauUs
+            calibration = cal,
+            saturationThreshold = (config.adcFullScale - 5.0)
         )
 
         // 13. Persistence & Stability Tracking
