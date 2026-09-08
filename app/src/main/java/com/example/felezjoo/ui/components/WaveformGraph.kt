@@ -87,13 +87,15 @@ fun WaveformGraph(
     profile: DspProfile,
     sampleSpacingUs: Double = 1.6,
     modifier: Modifier = Modifier,
-    showControls: Boolean = true
+    showControls: Boolean = true,
+    normalizedResidualCurve: DoubleArray = residualCurve
 ) {
     var showRaw by remember { mutableStateOf(true) }
     var showFiltered by remember { mutableStateOf(true) }
     var showBaseline by remember { mutableStateOf(false) }
     var showGround by remember { mutableStateOf(true) }
     var showResidual by remember { mutableStateOf(true) }
+    var showNormalizedResidual by remember { mutableStateOf(false) }
     var showDerivative by remember { mutableStateOf(false) }
     var showCurvature by remember { mutableStateOf(false) }
     var showBands by remember { mutableStateOf(true) }
@@ -116,6 +118,7 @@ fun WaveformGraph(
                 CurveToggleChip("RAW", WaveRaw, showRaw) { showRaw = it }
                 CurveToggleChip("FILTERED", WaveFiltered, showFiltered) { showFiltered = it }
                 CurveToggleChip("RESIDUAL", WaveResidual, showResidual) { showResidual = it }
+                CurveToggleChip("NORM RES", Color(0xFFFF9100), showNormalizedResidual) { showNormalizedResidual = it }
                 CurveToggleChip("GROUND", WaveGround, showGround) { showGround = it }
                 CurveToggleChip("BASELINE", WaveBaseline, showBaseline) { showBaseline = it }
                 CurveToggleChip("D1 (SLOPE)", WaveDerivative, showDerivative) { showDerivative = it }
@@ -280,6 +283,9 @@ fun WaveformGraph(
                 }
                 if (showResidual && residualCurve.isNotEmpty()) {
                     drawDataCurve(residualCurve, ::mapX, ::mapY, WaveResidual, strokeWidth = 2.0f)
+                }
+                if (showNormalizedResidual && normalizedResidualCurve.isNotEmpty()) {
+                    drawDataCurve(normalizedResidualCurve, ::mapX, ::mapY, Color(0xFFFF9100), strokeWidth = 2.0f)
                 }
                 if (showDerivative && firstDerivative.isNotEmpty()) {
                     // Scaled for visual comparison

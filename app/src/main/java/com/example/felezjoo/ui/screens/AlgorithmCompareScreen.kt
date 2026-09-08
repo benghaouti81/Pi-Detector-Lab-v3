@@ -42,11 +42,11 @@ import com.example.ui.theme.LabTextSecondary
 fun AlgorithmCompareScreen(viewModel: FelezJooViewModel) {
     val currentBlock by viewModel.currentBlock.collectAsState()
 
-    // Run block simultaneously through all built-in profiles
+    // Run block simultaneously through all built-in profiles in read-only mode (P0 State Isolation)
     val profiles = remember { DspProfile.BUILT_IN_PROFILES }
     val results = remember(currentBlock) {
         profiles.map { p ->
-            p to viewModel.dspPipeline.processBlock(currentBlock, p)
+            p to viewModel.dspPipeline.processBlock(currentBlock, p, updateState = false)
         }
     }
 
@@ -57,7 +57,7 @@ fun AlgorithmCompareScreen(viewModel: FelezJooViewModel) {
             .padding(12.dp)
     ) {
         Text("MULTI-ALGORITHM BENCHMARK & COMPARISON", fontSize = 14.sp, fontWeight = FontWeight.Black, color = LabPrimary)
-        Text("Simultaneous evaluation of identical pulse decay through competing DSP pipelines", fontSize = 11.sp, color = LabTextSecondary)
+        Text("Isolated read-only evaluation of identical pulse decay through competing DSP pipelines (Zero State Side-Effects)", fontSize = 11.sp, color = LabTextSecondary)
 
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -83,8 +83,8 @@ fun AlgorithmCompareScreen(viewModel: FelezJooViewModel) {
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp,
                             color = when (res.targetClassification.name) {
-                                "STABLE_TARGET" -> LabSecondary
-                                "IRON" -> LabError
+                                "NON_FERROUS_LIKELY", "NON_FERROUS", "STABLE_TARGET" -> LabSecondary
+                                "FERROUS_LIKELY", "IRON" -> LabError
                                 "NO_TARGET" -> Color.Gray
                                 else -> LabTertiary
                             }
@@ -100,9 +100,10 @@ fun AlgorithmCompareScreen(viewModel: FelezJooViewModel) {
                         MetricBlock("Score", "%.1f".format(fv.targetScore), LabPrimary)
                         MetricBlock("Conf", "%.0f%%".format(fv.targetConfidence), LabSecondary)
                         MetricBlock("Iron", "%.0f".format(fv.ironScore), if (fv.ironScore > 50) LabError else Color.White)
-                        MetricBlock("Target ID", "${fv.targetId}", LabTertiary)
+                        MetricBlock("Target ID", if (fv.targetId > 0) "${fv.targetId}" else "--", LabTertiary)
                         MetricBlock("SNR", "%.1f".format(fv.snr), LabSecondary)
-                        MetricBlock("Noise", "%.2f".format(fv.noise), Color.White)
+                        MetricBlock("Tau", if (fv.isTauValid) "%.1fµs".format(fv.estimatedTauUs) else "--", if (fv.isTauValid) LabSecondary else Color.Gray)
+                        MetricBlock("Noise MAD", "%.2f".format(fv.noiseMad), Color.White)
                     }
                 }
             }

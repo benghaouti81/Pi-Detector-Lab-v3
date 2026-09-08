@@ -54,10 +54,9 @@ fun TargetStatusHeader(
         targetValue = when (classification) {
             TargetClassification.NO_TARGET -> LabTextMuted
             TargetClassification.POSSIBLE_TARGET -> LabTertiary
-            TargetClassification.STABLE_TARGET -> LabSecondary
-            TargetClassification.IRON -> LabError
-            TargetClassification.NON_FERROUS -> LabPrimary
-            TargetClassification.UNCERTAIN -> LabTertiary
+            TargetClassification.FERROUS_LIKELY, TargetClassification.IRON -> LabError
+            TargetClassification.NON_FERROUS_LIKELY, TargetClassification.NON_FERROUS, TargetClassification.STABLE_TARGET -> LabPrimary
+            TargetClassification.UNKNOWN, TargetClassification.UNCERTAIN -> LabTertiary
         },
         label = "BadgeColor"
     )

@@ -20,17 +20,55 @@ data class SamplingConfiguration(
     val maxDelayTicks: Int = 100,
     val integrationStartUs: Double = 10.0,
     val integrationWidthUs: Double = 30.0,
-    val delayUs: Double = 10.0
+    val integrationEndUs: Double = 45.0,
+    val delayUs: Double = 10.0,
+    val regionAStartUs: Double = 8.0,
+    val regionAEndUs: Double = 18.0,
+    val regionBStartUs: Double = 18.0,
+    val regionBEndUs: Double = 35.0,
+    val regionCStartUs: Double = 35.0,
+    val regionCEndUs: Double = 65.0,
+    val polarity: WaveformPolarity = WaveformPolarity.POSITIVE,
+    val transportOrder: com.example.felezjoo.dsp.EtsTransportOrder = com.example.felezjoo.dsp.EtsTransportOrder.CHRONOLOGICAL,
+    val timeOrigin: String = "TX_OFF_PLUS_DELAY"
 ) : Serializable {
 
     val maxAdcValue: Int
         get() = (1 shl adcResolution) - 1
 
+    val adcFullScale: Double
+        get() = maxAdcValue.toDouble()
+
     /**
-     * Equivalent time in microseconds for a given sample index.
+     * Physical time elapsed relative to the start of acquisition (sample index 0 = 0.0 us).
      */
     fun sampleTimeUs(index: Int): Double {
         return index * sampleSpacingUs
+    }
+
+    /**
+     * Absolute physical time elapsed from the transmitter coil turn-off instant (TX-off).
+     * At sample index 0, physical time is blockDelayUs (or config.delayUs).
+     */
+    fun absoluteSampleTimeUs(index: Int, blockDelayUs: Double = delayUs): Double {
+        return blockDelayUs + (index * sampleSpacingUs)
+    }
+
+    /**
+     * Maps physical microsecond timestamp relative to acquisition start to sample index.
+     */
+    fun timeUsToSampleIndex(timeUs: Double): Int {
+        if (sampleSpacingUs <= 0.0) return 0
+        return (timeUs / sampleSpacingUs).toInt().coerceIn(0, sampleCount - 1)
+    }
+
+    /**
+     * Maps physical microsecond start/end times to a pair of sample indices.
+     */
+    fun physicalRangeToIndices(startUs: Double, endUs: Double): Pair<Int, Int> {
+        val s = timeUsToSampleIndex(startUs)
+        val e = timeUsToSampleIndex(endUs).coerceAtLeast(s + 1)
+        return Pair(s, e)
     }
 
     /**

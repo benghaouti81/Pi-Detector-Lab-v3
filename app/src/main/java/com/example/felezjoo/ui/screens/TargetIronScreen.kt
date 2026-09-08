@@ -118,19 +118,25 @@ fun TargetIronScreen(viewModel: FelezJooViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    TechnicalStatBadge("A / B RATIO", "%.2f".format(fv?.aDivB ?: 0.0), if ((fv?.aDivB ?: 0.0) > 3.0) "(Iron signature)" else "", if ((fv?.aDivB ?: 0.0) > 3.0) LabError else LabSecondary)
-                    TechnicalStatBadge("B / C RATIO", "%.2f".format(fv?.bDivC ?: 0.0), if ((fv?.bDivC ?: 0.0) < 1.1) "(Rapid drop)" else "", LabPrimary)
+                    TechnicalStatBadge("A / B RATIO", "%.2f".format(fv?.aDivB ?: 0.0), if ((fv?.aDivB ?: 0.0) > 2.8) "(Iron signature)" else "", if ((fv?.aDivB ?: 0.0) > 2.8) LabError else LabSecondary)
+                    TechnicalStatBadge("B / C RATIO", "%.2f".format(fv?.bDivC ?: 0.0), if ((fv?.bDivC ?: 0.0) < 1.2) "(Rapid drop)" else "", LabPrimary)
                     TechnicalStatBadge("CURVATURE", "%.3f".format(fv?.curvature ?: 0.0), "", Color(0xFFEA80FC))
-                    TechnicalStatBadge("TAU EARLY", "%.2f".format(fv?.earlyTauUs ?: 0.0), "µs", LabPrimary)
-                    TechnicalStatBadge("TAU LATE", "%.2f".format(fv?.lateTauUs ?: 0.0), "µs", LabSecondary)
-                    TechnicalStatBadge("TAU RATIO", "%.2f".format(fv?.tauRatio ?: 0.0), "", LabTertiary)
+                    TechnicalStatBadge(
+                        "REGRESSION TAU",
+                        if (fv?.isTauValid == true) "%.1f".format(fv.estimatedTauUs) else "--",
+                        if (fv?.isTauValid == true) "µs (R²=%.2f)".format(fv.tauFitR2) else "(No fit)",
+                        if (fv?.isTauValid == true) LabSecondary else Color.Gray
+                    )
+                    TechnicalStatBadge("ENERGY A", "%.1f".format(fv?.energyA ?: 0.0), "V²·µs", LabPrimary)
+                    TechnicalStatBadge("ENERGY C", "%.1f".format(fv?.energyC ?: 0.0), "V²·µs", LabSecondary)
+                    TechnicalStatBadge("GROUND ADAPT", if (fv?.isGroundFrozen == true) "FROZEN" else "TRACKING", fv?.groundFreezeReason ?: "", if (fv?.isGroundFrozen == true) LabError else LabSecondary)
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Target ID Algorithm Comparison
+        // Target ID Physical Measurements Panel
         Surface(
             color = LabSurface,
             shape = RoundedCornerShape(10.dp),
@@ -138,12 +144,12 @@ fun TargetIronScreen(viewModel: FelezJooViewModel) {
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
-                Text("TARGET ID CANDIDATE CALCULATIONS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabPrimary)
+                Text("DETERMINISTIC TARGET CLASSIFICATION & ID", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabPrimary)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Zero synthetic/random seeds. Target ID is derived purely from measured decay physics (tau & energy ratios).", fontSize = 11.sp, color = LabTextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
 
-                val id1 = ((fv?.estimatedTauUs ?: 1.0) * 16.0).toInt().coerceIn(1, 99)
-                val id2 = (((fv?.areaNorm ?: 0.0) / 4.0) * 80.0).toInt().coerceIn(1, 99)
-                val id3 = fv?.targetId ?: 0
+                val idDisplay = if ((fv?.targetScore ?: 0.0) >= 30.0 && (fv?.targetId ?: 0) > 0) "%02d".format(fv?.targetId) else "--"
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -151,16 +157,34 @@ fun TargetIronScreen(viewModel: FelezJooViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("ID-ALG-1 (Tau-based):", fontSize = 11.sp, color = LabTextSecondary)
-                        Text("$id1", fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = Color.White)
+                        Text("PHYSICAL TAU FIT:", fontSize = 11.sp, color = LabTextSecondary)
+                        Text(
+                            if (fv?.isTauValid == true) "%.1f µs (R²=%.2f)".format(fv.estimatedTauUs, fv.tauFitR2) else "--",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = Color.White
+                        )
                     }
                     Column {
-                        Text("ID-ALG-2 (Area-based):", fontSize = 11.sp, color = LabTextSecondary)
-                        Text("$id2", fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = Color.White)
+                        Text("DECAY RATIO (A/B):", fontSize = 11.sp, color = LabTextSecondary)
+                        Text(
+                            "%.2f".format(fv?.aDivB ?: 0.0),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = Color.White
+                        )
                     }
-                    Column {
-                        Text("ACTIVE BLENDED ID:", fontSize = 11.sp, color = LabTertiary)
-                        Text("$id3", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace, color = LabTertiary)
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("ACTIVE TARGET ID:", fontSize = 11.sp, color = LabTertiary)
+                        Text(
+                            idDisplay,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontFamily = FontFamily.Monospace,
+                            color = LabTertiary
+                        )
                     }
                 }
             }

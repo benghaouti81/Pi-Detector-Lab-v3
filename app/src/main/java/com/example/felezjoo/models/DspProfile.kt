@@ -43,6 +43,22 @@ data class DspProfile(
     val bEndSample: Int = 32,
     val cStartSample: Int = 33,
     val cEndSample: Int = 60,
+    // Physical time windows (microseconds relative to acquisition start)
+    val integrationStartUs: Double = 12.8,
+    val integrationEndUs: Double = 48.0,
+    val regionAStartUs: Double = 8.0,
+    val regionAEndUs: Double = 24.0,
+    val regionBStartUs: Double = 24.0,
+    val regionBEndUs: Double = 51.2,
+    val regionCStartUs: Double = 51.2,
+    val regionCEndUs: Double = 96.0,
+    // Safe Ground Tracking Parameters
+    val groundFreezeScore: Double = 28.0,
+    val groundFreezeSnr: Double = 3.5,
+    val groundFreezePersistence: Double = 40.0,
+    val groundEarlyAlphaMultiplier: Double = 0.2,
+    val groundLateAlphaMultiplier: Double = 1.0,
+    val groundMaxStepPerFrame: Double = 4.0,
     // Configurable Target Score Weights w1..w5
     val weightSignal: Double = 0.25,
     val weightSnr: Double = 0.25,
@@ -54,8 +70,20 @@ data class DspProfile(
     val confidenceThreshold: Double = 45.0,
     val audioThreshold: Double = 25.0,
     val ironRejectThreshold: Double = 60.0,
-    val dspVersion: String = "DSP-2.0"
+    val dspVersion: String = "DSP-2.1-PHYS"
 ) : Serializable {
+
+    fun getIntegrationIndices(config: SamplingConfiguration): Pair<Int, Int> =
+        config.physicalRangeToIndices(integrationStartUs, integrationEndUs)
+
+    fun getRegionAIndices(config: SamplingConfiguration): Pair<Int, Int> =
+        config.physicalRangeToIndices(regionAStartUs, regionAEndUs)
+
+    fun getRegionBIndices(config: SamplingConfiguration): Pair<Int, Int> =
+        config.physicalRangeToIndices(regionBStartUs, regionBEndUs)
+
+    fun getRegionCIndices(config: SamplingConfiguration): Pair<Int, Int> =
+        config.physicalRangeToIndices(regionCStartUs, regionCEndUs)
 
     val targetScoreThreshold: Double get() = targetThreshold
     val wSignal: Double get() = weightSignal

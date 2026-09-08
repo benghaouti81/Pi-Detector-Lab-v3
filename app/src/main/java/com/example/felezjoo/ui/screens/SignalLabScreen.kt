@@ -83,6 +83,7 @@ fun SignalLabScreen(viewModel: FelezJooViewModel) {
                 baselineCurve = dspResult?.baselineCurve ?: DoubleArray(0),
                 groundCurve = dspResult?.groundCurve ?: DoubleArray(0),
                 residualCurve = dspResult?.residualCurve ?: DoubleArray(0),
+                normalizedResidualCurve = dspResult?.normalizedResidualCurve ?: DoubleArray(0),
                 firstDerivative = dspResult?.firstDerivative ?: DoubleArray(0),
                 secondDerivative = dspResult?.secondDerivative ?: DoubleArray(0),
                 profile = activeProfile,
@@ -178,18 +179,27 @@ fun SignalLabScreen(viewModel: FelezJooViewModel) {
 
                 fv?.let { v ->
                     FeatureTableRow("Target Score", "%.1f / 100".format(v.targetScore), "Target Confidence", "%.1f%%".format(v.targetConfidence))
-                    FeatureTableRow("Target ID (1..99)", "${v.targetId}", "Iron Score (0..100)", "%.1f".format(v.ironScore))
+                    FeatureTableRow("Target ID", if (v.targetId > 0) "${v.targetId}" else "--", "Iron Score (0..100)", "%.1f".format(v.ironScore))
                     FeatureTableRow("Signal Amplitude", "%.2f ADC".format(v.amplitude), "SNR", "%.2f : 1".format(v.snr))
                     FeatureTableRow("Noise RMS", "%.2f ADC".format(v.noise), "Noise MAD", "%.2f ADC".format(v.noiseMad))
-                    FeatureTableRow("Integration Area", "%.1f".format(v.area), "Normalized Area", "%.2f".format(v.areaNorm))
-                    FeatureTableRow("Slope Window", "%.2f".format(v.slope), "Estimated Tau", "%.2f µs".format(v.estimatedTauUs))
-                    FeatureTableRow("Early Tau", "%.2f µs".format(v.earlyTauUs), "Late Tau", "%.2f µs".format(v.lateTauUs))
-                    FeatureTableRow("Early / Late Tau Ratio", "%.2f".format(v.tauRatio), "Curvature", "%.3f".format(v.curvature))
+                    FeatureTableRow("Integration Area", "%.1f".format(v.area), "Sample Spacing (dt)", "%.2f µs".format(v.dtUs))
+                    FeatureTableRow(
+                        "Regression Tau",
+                        if (v.isTauValid) "%.2f µs".format(v.estimatedTauUs) else "--",
+                        "Tau Fit R² / N",
+                        if (v.isTauValid) "%.2f (N=%d)".format(v.tauFitR2, v.tauFitSampleCount) else "--"
+                    )
+                    FeatureTableRow("A - B Difference", "%.1f".format(v.aMinusB), "Curvature (d²V/dt²)", "%.3f".format(v.curvature))
                     FeatureTableRow("Band A Integral", "%.1f".format(v.integralA), "Band B Integral", "%.1f".format(v.integralB))
-                    FeatureTableRow("Band C Integral", "%.1f".format(v.integralC), "A - B Difference", "%.1f".format(v.aMinusB))
-                    FeatureTableRow("B - C Difference", "%.1f".format(v.bMinusC), "A / B Ratio", "%.2f".format(v.aDivB))
-                    FeatureTableRow("B / C Ratio", "%.2f".format(v.bDivC), "A / C Ratio", "%.2f".format(v.aDivC))
-                    FeatureTableRow("Ground Difference", "%.2f ADC".format(v.groundDifference), "Persistence Score", "%.1f".format(v.persistence))
+                    FeatureTableRow("Band C Integral", "%.1f".format(v.integralC), "A / B Ratio", "%.2f".format(v.aDivB))
+                    FeatureTableRow("Energy A (Early)", "%.1f".format(v.energyA), "Energy C (Late)", "%.1f".format(v.energyC))
+                    FeatureTableRow("Early / Late Ratio", "%.2f".format(v.earlyLateRatio), "Ground Diff", "%.2f ADC".format(v.groundDifference))
+                    FeatureTableRow(
+                        "Ground Adaptation",
+                        if (v.isGroundFrozen) "FROZEN" else "TRACKING",
+                        "Freeze Reason",
+                        if (v.isGroundFrozen) v.groundFreezeReason else "Normal"
+                    )
                 }
             }
         }
