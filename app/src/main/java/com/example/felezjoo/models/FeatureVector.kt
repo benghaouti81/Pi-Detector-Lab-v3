@@ -5,6 +5,7 @@ import java.io.Serializable
 enum class TargetClassification(val label: String) {
     NO_TARGET("NO TARGET"),
     POSSIBLE_TARGET("POSSIBLE TARGET"),
+    // Heuristic ferrous likelihood indication based on engineering thresholds (not laboratory-calibrated)
     FERROUS_LIKELY("FERROUS LIKELY"),
     NON_FERROUS_LIKELY("NON-FERROUS LIKELY"),
     UNKNOWN("UNKNOWN"),
@@ -69,7 +70,7 @@ data class FeatureVector(
     val targetScore: Double = 0.0,
     val targetConfidence: Double = 0.0,
     val ironScore: Double = 0.0,
-    val targetId: Int = 0, // 0 = UNAVAILABLE / NOT CALIBRATED
+    val targetId: Int = 0, // 0 = UNAVAILABLE until a calibrated labelled dataset/model exists
     val isTargetIdCalibrated: Boolean = false,
     val classification: TargetClassification = TargetClassification.NO_TARGET,
     val noiseMad: Double = 0.0,
@@ -83,6 +84,8 @@ data class FeatureVector(
     val tauFitError: Double = 0.0,
     val tauFitSampleCount: Int = 0,
     val isTauValid: Boolean = false,
+    val isEarlyTauValid: Boolean = false,
+    val isLateTauValid: Boolean = false,
     val tauFitStartUs: Double = 0.0,
     val tauFitEndUs: Double = 0.0,
     val energyA: Double = 0.0,
@@ -99,6 +102,28 @@ data class FeatureVector(
 ) : Serializable {
     // Explicit semantic alias for absolute residual mean
     val meanAbsoluteResidual: Double get() = meanAbsolute
+
+    /**
+     * Effective single-exponential Tau fitted over the selected decay window.
+     * Note: This is an effective single-exponential approximation fitted over the selected decay window,
+     * not a unique physical time constant of the complete PI waveform.
+     */
+    val effectiveTauUs: Double get() = estimatedTauUs
+    val tauUs: Double get() = estimatedTauUs
+
+    /**
+     * Heuristic engineering confidence score (0..100) based on SNR, persistence, stability, and noise health.
+     * Note: confidenceScore is a heuristic 0..100 engineering confidence metric, not a statistically calibrated probability.
+     */
+    val confidenceScore: Double get() = targetConfidence
+
+    /**
+     * Heuristic ferrous likelihood score (0..100) based on decay-shape metrics (A/B, B/C, early/late ratios, Tau).
+     * Note: This is an uncalibrated heuristic material indication, NOT a scientifically calibrated material identification.
+     */
+    val ferrousLikelihoodScore: Double get() = ironScore
+    val heuristicFerrousScore: Double get() = ironScore
+    val ferrousScore: Double get() = ironScore
 }
 
 data class TargetEvent(

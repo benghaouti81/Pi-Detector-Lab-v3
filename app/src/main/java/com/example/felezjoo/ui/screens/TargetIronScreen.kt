@@ -145,9 +145,9 @@ fun TargetIronScreen(viewModel: FelezJooViewModel) {
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
-                Text("DETERMINISTIC TARGET CLASSIFICATION & ID", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabPrimary)
+                Text("TARGET CLASSIFICATION & ID", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabPrimary)
                 Spacer(modifier = Modifier.height(6.dp))
-                Text("Zero synthetic/random seeds. Target ID is derived purely from measured decay physics (tau & energy ratios).", fontSize = 11.sp, color = LabTextSecondary)
+                Text("Zero synthetic/random seeds. Target ID unavailable until a calibrated labelled dataset/model exists.", fontSize = 11.sp, color = LabTextSecondary)
                 Spacer(modifier = Modifier.height(8.dp))
 
                 val idDisplay = if ((fv?.targetScore ?: 0.0) >= 30.0 && (fv?.targetId ?: 0) > 0) "%02d".format(fv?.targetId) else "--"

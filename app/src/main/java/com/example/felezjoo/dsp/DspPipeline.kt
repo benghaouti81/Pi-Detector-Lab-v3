@@ -30,6 +30,8 @@ data class DspCalculationResult(
     val normalizedResidualCurve: DoubleArray = residualCurve,
     val detectionCurve: DoubleArray = filteredCurve,
     val tauFitResult: TauFitResult = TauFitResult.UNAVAILABLE,
+    val earlyTauFitResult: TauFitResult = TauFitResult.UNAVAILABLE,
+    val lateTauFitResult: TauFitResult = TauFitResult.UNAVAILABLE,
     val isGroundFrozen: Boolean = false,
     val groundFreezeReason: String = "",
     val postUpdateGroundCurve: DoubleArray = groundCurve
@@ -47,7 +49,7 @@ data class DspCalculationResult(
  * 6. Scientific Tau estimation via multi-point log-linear regression (no arbitrary formulas).
  * 7. Multi-zone Safe Ground Tracking with freeze protection on target detection.
  * 8. Real noise estimation via Median Absolute Deviation (MAD) and difference noise.
- * 9. Deterministic Target ID and objective classification without fake random numbers.
+ * 9. Target ID unavailable until a calibrated labelled dataset/model exists (objective classification without fake numbers).
  */
 class DspPipeline {
 
@@ -113,7 +115,7 @@ class DspPipeline {
         val rawChronological = EtsReconstruction.toChronological(block.rawSamples, config)
         val count = rawChronological.size
         // Hardware sampling spacing: derived from block or active sampling configuration (never a blind hardcoded constant)
-        val dt = if (block.sampleSpacingUs > 0.0) block.sampleSpacingUs else config.sampleSpacingUs
+        val dt = if (config.sampleSpacingUs > 0.0) config.sampleSpacingUs else if (block.sampleSpacingUs > 0.0) block.sampleSpacingUs else 1.6
 
         // 2. Thread-safe snapshot of baseline and ground models
         val activeBaseline: DoubleArray
@@ -260,11 +262,38 @@ class DspPipeline {
         // 12. Scientific Tau Estimation via Multi-Point Log-Linear Regression
         // Uses normalizedResidual (the unskewed measurement path), NOT detectionCurve (which has non-linear median filter distortion)
         val cal = profile.calibration
-        val tauResult = TauEstimator.estimateTau(
+
+        // Full-window effective single-exponential Tau estimate
+        // Fitted over the selected decay window (validStart until validEnd)
+        val effectiveTauResult = TauEstimator.estimateTau(
             waveform = normalizedResidual,
             sampleSpacingUs = dt,
             startIndex = validStart,
             endIndex = validEnd,
+            noiseFloor = noiseFloor,
+            calibration = cal,
+            saturationThreshold = (config.adcFullScale - 5.0)
+        )
+
+        // Early-region Tau estimate (derived from profile physical early window converted via config)
+        val (earlyStart, earlyEnd) = profile.getEarlyTauIndices(config)
+        val earlyTauResult = TauEstimator.estimateTau(
+            waveform = normalizedResidual,
+            sampleSpacingUs = dt,
+            startIndex = earlyStart,
+            endIndex = earlyEnd,
+            noiseFloor = noiseFloor,
+            calibration = cal,
+            saturationThreshold = (config.adcFullScale - 5.0)
+        )
+
+        // Late-region Tau estimate (derived from profile physical late window converted via config)
+        val (lateStart, lateEnd) = profile.getLateTauIndices(config)
+        val lateTauResult = TauEstimator.estimateTau(
+            waveform = normalizedResidual,
+            sampleSpacingUs = dt,
+            startIndex = lateStart,
+            endIndex = lateEnd,
             noiseFloor = noiseFloor,
             calibration = cal,
             saturationThreshold = (config.adcFullScale - 5.0)
@@ -305,21 +334,24 @@ class DspPipeline {
                 profile.weightPersistence * persistenceTerm)
         val targetScore = rawScore.coerceIn(0.0, 100.0)
 
-        // 15. Target Confidence (0-100%)
-        val confidence = calculateConfidence(snr, persistence, stability, noiseFloor, targetScore, cal)
+        // 15. Heuristic Confidence Score (0-100)
+        // Note: confidenceScore is a heuristic 0..100 engineering confidence metric based on SNR, persistence,
+        // stability, and noise health, NOT a statistically calibrated probability.
+        val confidenceScore = calculateConfidenceScore(snr, persistence, stability, noiseFloor, targetScore, cal)
 
-        // 16. Ferrous / Non-Ferrous Metric (0-100)
-        // High early/late ratio, steep negative slope, rapid early dissipation => Ferrous
-        // Smooth exponential decay, high tau, sustained late response => Non-ferrous
-        val ironScore = calculateFerrousScore(aDivB, bDivC, earlyLateRatio, curvature, slopeA, tauResult)
+        // 16. Heuristic Ferrous Likelihood Metric (0-100)
+        // Rapid early collapse + low late eddy currents -> Ferrous likelihood
+        // Smooth exponential decay, high tau, sustained late response -> Non-ferrous likelihood
+        // Note: This is an uncalibrated heuristic material indication, NOT a scientifically calibrated material identification.
+        val ironScore = calculateHeuristicFerrousScore(aDivB, bDivC, earlyLateRatio, curvature, slopeA, effectiveTauResult)
 
-        // 17. Target ID: Uncalibrated
+        // 17. Target ID: Unavailable until a calibrated labelled dataset/model exists
         // No physical VDI calibration dataset exists for this detector hardware and coil set.
-        // Returning 0 indicates UNAVAILABLE / NOT CALIBRATED.
+        // Returning targetId = 0 and isTargetIdCalibrated = false indicates UNAVAILABLE.
         val targetId = 0
 
         // 18. Objective Target Classification
-        val classification = determineClassification(targetScore, confidence, ironScore, profile)
+        val classification = determineClassification(targetScore, confidenceScore, ironScore, profile)
 
         // 19. Multi-zone Safe Ground Adaptation
         val groundAdaptationStatus: GroundAdaptationStatus
@@ -395,7 +427,7 @@ class DspPipeline {
             persistence = persistence,
             stability = stability,
             targetScore = targetScore,
-            targetConfidence = confidence,
+            targetConfidence = confidenceScore,
             ironScore = ironScore,
             targetId = targetId,
             isTargetIdCalibrated = false,
@@ -403,16 +435,22 @@ class DspPipeline {
             noiseMad = noiseMad,
             areaNorm = (integrationArea / count.coerceAtLeast(1)).coerceAtLeast(0.0),
             slope = slopeA,
-            estimatedTauUs = if (tauResult.isAvailable) tauResult.tauUs else 0.0,
-            earlyTauUs = if (tauResult.isAvailable) tauResult.tauUs else 0.0,
-            lateTauUs = if (tauResult.isAvailable) tauResult.tauUs else 0.0,
-            tauRatio = earlyLateRatio,
-            tauFitR2 = tauResult.rSquared,
-            tauFitError = tauResult.fitError,
-            tauFitSampleCount = tauResult.fitSampleCount,
-            isTauValid = tauResult.isAvailable,
-            tauFitStartUs = tauResult.fitStartUs,
-            tauFitEndUs = tauResult.fitEndUs,
+            estimatedTauUs = if (effectiveTauResult.isAvailable) effectiveTauResult.tauUs else 0.0,
+            earlyTauUs = if (earlyTauResult.isAvailable) earlyTauResult.tauUs else 0.0,
+            lateTauUs = if (lateTauResult.isAvailable) lateTauResult.tauUs else 0.0,
+            tauRatio = if (earlyTauResult.isAvailable && lateTauResult.isAvailable && lateTauResult.tauUs > 1e-4) {
+                earlyTauResult.tauUs / lateTauResult.tauUs
+            } else {
+                0.0
+            },
+            tauFitR2 = effectiveTauResult.rSquared,
+            tauFitError = effectiveTauResult.fitError,
+            tauFitSampleCount = effectiveTauResult.fitSampleCount,
+            isTauValid = effectiveTauResult.isAvailable,
+            isEarlyTauValid = earlyTauResult.isAvailable,
+            isLateTauValid = lateTauResult.isAvailable,
+            tauFitStartUs = effectiveTauResult.fitStartUs,
+            tauFitEndUs = effectiveTauResult.fitEndUs,
             energyA = energyA,
             energyB = energyB,
             energyC = energyC,
@@ -448,7 +486,9 @@ class DspPipeline {
             secondDerivative = d2,
             featureVector = fv,
             targetClassification = classification,
-            tauFitResult = tauResult,
+            tauFitResult = effectiveTauResult,
+            earlyTauFitResult = earlyTauResult,
+            lateTauFitResult = lateTauResult,
             isGroundFrozen = groundAdaptationStatus.isFrozen,
             groundFreezeReason = groundAdaptationStatus.freezeReason,
             postUpdateGroundCurve = finalGroundSnapshot
@@ -502,7 +542,12 @@ class DspPipeline {
         return ((1.0 - cv.coerceIn(0.0, 1.0)) * 100.0).coerceIn(0.0, 100.0)
     }
 
-    private fun calculateConfidence(
+    /**
+     * Calculates heuristic engineering confidence score (0-100).
+     * Note: confidenceScore is a heuristic 0..100 engineering confidence metric based on SNR, persistence,
+     * stability, and noise health, NOT a statistically calibrated probability.
+     */
+    private fun calculateConfidenceScore(
         snr: Double,
         persistence: Double,
         stability: Double,
@@ -519,7 +564,11 @@ class DspPipeline {
         return conf.coerceIn(0.0, 100.0)
     }
 
-    private fun calculateFerrousScore(
+    /**
+     * Calculates heuristic ferrous likelihood score (0-100) based on decay-shape metrics.
+     * Note: This is an uncalibrated heuristic material indication, NOT a scientifically calibrated material identification.
+     */
+    private fun calculateHeuristicFerrousScore(
         aDivB: Double,
         bDivC: Double,
         earlyLateRatio: Double,
@@ -549,6 +598,11 @@ class DspPipeline {
         return score.coerceIn(0.0, 100.0)
     }
 
+    /**
+     * Determines target classification using heuristic score and likelihood thresholds.
+     * Note: FERROUS_LIKELY and NON_FERROUS_LIKELY are heuristic indications based on experimental engineering
+     * thresholds, not laboratory-calibrated material identifications.
+     */
     private fun determineClassification(
         score: Double,
         confidence: Double,

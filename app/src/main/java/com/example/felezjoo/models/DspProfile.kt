@@ -90,6 +90,11 @@ data class DspProfile(
     val regionBEndUs: Double = 51.2,
     val regionCStartUs: Double = 51.2,
     val regionCEndUs: Double = 96.0,
+    // Physical time windows for independent Early and Late Tau estimation (microseconds)
+    val earlyTauStartUs: Double = regionAStartUs,
+    val earlyTauEndUs: Double = regionAEndUs,
+    val lateTauStartUs: Double = regionCStartUs,
+    val lateTauEndUs: Double = regionCEndUs,
     // Single source of truth for Ground Adaptation
     val groundConfig: GroundTrackingConfig = GroundTrackingConfig(alpha = 0.02),
     // Configurable Target Score Weights w1..w5 (sum = 1.0)
@@ -119,6 +124,12 @@ data class DspProfile(
 
     fun getRegionCIndices(config: SamplingConfiguration): Pair<Int, Int> =
         config.physicalRangeToIndices(regionCStartUs, regionCEndUs)
+
+    fun getEarlyTauIndices(config: SamplingConfiguration): Pair<Int, Int> =
+        config.physicalRangeToIndices(earlyTauStartUs, earlyTauEndUs)
+
+    fun getLateTauIndices(config: SamplingConfiguration): Pair<Int, Int> =
+        config.physicalRangeToIndices(lateTauStartUs, lateTauEndUs)
 
     // Derived sample-index helpers (evaluated from physical time and active sampling configuration)
     fun integrationStartSample(config: SamplingConfiguration): Int =

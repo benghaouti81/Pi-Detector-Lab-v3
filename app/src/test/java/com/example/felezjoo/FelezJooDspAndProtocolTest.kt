@@ -555,40 +555,396 @@ class FelezJooDspAndProtocolTest {
     }
 
     @Test
-    fun testTauEstimatorOutlierRejection() {
+    fun testEarlyAndLateTauIndependentPhysics() {
         val dt = 1.6
-        val sampleCount = 30
-        val trueTau = 20.0
-        val a0 = 200.0
+        val sampleCount = 70
+        val config = SamplingConfiguration(sampleCount = sampleCount, sampleSpacingUs = dt)
+        val profile = DspProfile.STABLE // Region A: 8..24 us, Region C: 51.2..96 us
 
-        // Pure decay
-        val cleanWaveform = DoubleArray(sampleCount) { i ->
+        // Two-component decay: fast transient (tau=10 us) + slow conductive eddy currents (tau=50 us)
+        val twoComponentDecay = DoubleArray(sampleCount) { i ->
             val t = i * dt
-            a0 * kotlin.math.exp(-t / trueTau)
+            450.0 * kotlin.math.exp(-t / 10.0) + 180.0 * kotlin.math.exp(-t / 50.0)
         }
 
-        // Add an isolated spike/glitch outlier in the middle
-        val corruptedWaveform = cleanWaveform.clone()
-        val glitchIndex = 12
-        corruptedWaveform[glitchIndex] = corruptedWaveform[glitchIndex] * 4.0 // 4x outlier spike
-
-        val cal = com.example.felezjoo.models.DetectionCalibration(
-            minTauUs = 1.0,
-            maxTauUs = 300.0,
-            minTauR2 = 0.85
+        val rawBlock = DecayBlock(
+            sequenceNumber = 100L,
+            timestamp = 1000L,
+            delayTicks = 12,
+            rawSamples = twoComponentDecay.map { it.toInt() }.toIntArray(),
+            samplingConfiguration = config
         )
 
-        val result = com.example.felezjoo.dsp.TauEstimator.estimateTau(
-            waveform = corruptedWaveform,
-            sampleSpacingUs = dt,
-            startIndex = 4,
-            endIndex = 26,
-            noiseFloor = 1.0,
-            calibration = cal
+        val pipeline = DspPipeline()
+        val result = pipeline.processBlock(rawBlock, profile, updateState = false)
+        val fv = result.featureVector
+
+        // 1. Independent calculation verification
+        assertTrue("Early Tau must be valid", fv.isEarlyTauValid)
+        assertTrue("Late Tau must be valid", fv.isLateTauValid)
+        assertTrue("Early Tau fit result must be available", result.earlyTauFitResult.isAvailable)
+        assertTrue("Late Tau fit result must be available", result.lateTauFitResult.isAvailable)
+
+        // Early window (8..24 us) is dominated by the 10 us component (tau ~ 13-18 us)
+        // Late window (51.2..96 us) is dominated almost purely by the 50 us component (tau ~ 45-52 us)
+        assertTrue(
+            "Early Tau (${fv.earlyTauUs}) must be significantly faster than Late Tau (${fv.lateTauUs})",
+            fv.earlyTauUs < (fv.lateTauUs * 0.6)
+        )
+        assertTrue("Early Tau must be in sensible range [8, 25] us", fv.earlyTauUs in 8.0..25.0)
+        assertTrue("Late Tau must be in sensible range [40, 60] us", fv.lateTauUs in 40.0..60.0)
+        assertTrue("tauRatio must reflect early/late tau ratio", fv.tauRatio > 0.0 && fv.tauRatio < 0.6)
+
+        // 2. Independent validity verification: Fast decay that drops below noise floor in late window
+        val fastDecayOnly = DoubleArray(sampleCount) { i ->
+            val t = i * dt
+            if (t < 30.0) 500.0 * kotlin.math.exp(-t / 6.0) else 0.5 // Sub-noise floor in region C
+        }
+        val fastBlock = DecayBlock(
+            sequenceNumber = 101L,
+            timestamp = 1010L,
+            delayTicks = 12,
+            rawSamples = fastDecayOnly.map { it.toInt() }.toIntArray(),
+            samplingConfiguration = config
         )
 
-        assertTrue("Tau fit must succeed despite isolated outlier glitch", result.isAvailable)
-        assertEquals("Fitted tau after conservative outlier rejection must remain close to true tau", trueTau, result.tauUs, 2.5)
-        assertTrue("R^2 must be high after rejecting outlier", result.rSquared >= 0.85)
+        val fastResult = pipeline.processBlock(fastBlock, profile, updateState = false)
+        val fastFv = fastResult.featureVector
+
+        assertTrue("Early Tau must remain valid for fast transient", fastFv.isEarlyTauValid)
+        assertFalse("Late Tau must be unavailable when region C lacks signal above noise", fastFv.isLateTauValid)
+        assertFalse("Late Tau fit result must report unavailable", fastResult.lateTauFitResult.isAvailable)
+        assertTrue("Late Tau fit result tauUs must be NaN", fastResult.lateTauFitResult.tauUs.isNaN())
+        assertEquals("Late Tau in FeatureVector must be 0.0 when unavailable", 0.0, fastFv.lateTauUs, 1e-9)
+        assertTrue(
+            "Late Tau must NEVER be silently copied from effectiveTauUs (effective=${fastFv.effectiveTauUs}, late=${fastFv.lateTauUs})",
+            fastFv.lateTauUs != fastFv.effectiveTauUs
+        )
+    }
+
+    @Test
+    fun testEarlyAndLateTauPhysicalTimeInvarianceWithDifferentSpacing() {
+        val continuousTau = 22.0
+        val continuousAmp = 350.0
+
+        // Configuration 1: spacing = 1.6 us
+        val config1 = SamplingConfiguration(sampleCount = 70, sampleSpacingUs = 1.6)
+        val samples1 = DoubleArray(config1.sampleCount) { i ->
+            val t = i * config1.sampleSpacingUs
+            continuousAmp * kotlin.math.exp(-t / continuousTau)
+        }
+        val block1 = DecayBlock(
+            sequenceNumber = 1L,
+            timestamp = 100L,
+            delayTicks = 12,
+            sampleSpacingUs = config1.sampleSpacingUs,
+            sampleCount = config1.sampleCount,
+            rawSamples = samples1.map { it.toInt() }.toIntArray(),
+            samplingConfiguration = config1
+        )
+
+        // Configuration 2: spacing = 2.4 us (fewer samples over same total physical duration)
+        val config2 = SamplingConfiguration(sampleCount = 46, sampleSpacingUs = 2.4)
+        val samples2 = DoubleArray(config2.sampleCount) { i ->
+            val t = i * config2.sampleSpacingUs
+            continuousAmp * kotlin.math.exp(-t / continuousTau)
+        }
+        val block2 = DecayBlock(
+            sequenceNumber = 2L,
+            timestamp = 200L,
+            delayTicks = 12,
+            sampleSpacingUs = config2.sampleSpacingUs,
+            sampleCount = config2.sampleCount,
+            rawSamples = samples2.map { it.toInt() }.toIntArray(),
+            samplingConfiguration = config2
+        )
+
+        val profile = DspProfile.STABLE
+        val pipeline = DspPipeline()
+
+        val r1 = pipeline.processBlock(block1, profile, updateState = false)
+        val r2 = pipeline.processBlock(block2, profile, updateState = false)
+
+        assertTrue("Config1 early Tau must be valid", r1.featureVector.isEarlyTauValid)
+        assertTrue("Config2 early Tau must be valid", r2.featureVector.isEarlyTauValid)
+
+        // Verify that physical microsecond time windowing gives consistent physical Tau regardless of dt
+        assertEquals("Early Tau must be invariant to sample spacing within 1.5 us", r1.featureVector.earlyTauUs, r2.featureVector.earlyTauUs, 1.5)
+        assertEquals("Effective Tau must be invariant to sample spacing within 1.5 us", r1.featureVector.effectiveTauUs, r2.featureVector.effectiveTauUs, 1.5)
+    }
+
+    @Test
+    fun testTauEstimatorComprehensiveRobustness() {
+        val dt = 1.6
+        val sampleCount = 40
+        val trueTau = 25.0
+        val a0 = 250.0
+
+        // A. Clean exponential decay
+        val clean = DoubleArray(sampleCount) { i -> a0 * kotlin.math.exp(-(i * dt) / trueTau) }
+        val rClean = TauEstimator.estimateTau(clean, dt, startIndex = 4, endIndex = 35, noiseFloor = 1.0)
+        assertTrue("A: Clean decay must be available", rClean.isAvailable)
+        assertEquals("A: Clean decay tau must match true tau within 0.5 us", trueTau, rClean.tauUs, 0.5)
+        assertTrue("A: Clean R2 must exceed 0.99", rClean.rSquared > 0.99)
+
+        // B. Exponential + deterministic reproducible noise
+        val noisy = DoubleArray(sampleCount) { i ->
+            val t = i * dt
+            // Deterministic bounded pseudorandom variation using sine harmonics
+            val noise = 3.5 * kotlin.math.sin(i * 1.7) + 2.0 * kotlin.math.cos(i * 3.1)
+            (a0 * kotlin.math.exp(-t / trueTau) + noise).coerceAtLeast(0.0)
+        }
+        val rNoisy = TauEstimator.estimateTau(noisy, dt, startIndex = 4, endIndex = 35, noiseFloor = 2.0)
+        assertTrue("B: Noisy decay must remain available", rNoisy.isAvailable)
+        assertEquals("B: Noisy decay tau must remain close to true tau within 2.0 us", trueTau, rNoisy.tauUs, 2.0)
+
+        // C. Exponential with one strong positive spike
+        val positiveSpike = clean.clone()
+        positiveSpike[14] = positiveSpike[14] * 3.5 // strong outlier spike
+        val rPosSpike = TauEstimator.estimateTau(positiveSpike, dt, startIndex = 4, endIndex = 35, noiseFloor = 1.0)
+        assertTrue("C: Positive spike must be handled by outlier rejection", rPosSpike.isAvailable)
+        assertEquals("C: Tau after positive spike rejection must match true tau within 2.0 us", trueTau, rPosSpike.tauUs, 2.0)
+
+        // D. Exponential with one strong negative disturbance (well above noise floor)
+        val negativeSpike = clean.clone()
+        negativeSpike[14] = negativeSpike[14] * 0.25 // strong downward glitch
+        val rNegSpike = TauEstimator.estimateTau(negativeSpike, dt, startIndex = 4, endIndex = 35, noiseFloor = 1.0)
+        assertTrue("D: Negative disturbance must be handled by outlier rejection", rNegSpike.isAvailable)
+        assertEquals("D: Tau after negative glitch rejection must match true tau within 2.5 us", trueTau, rNegSpike.tauUs, 2.5)
+
+        // E. Insufficient valid samples (< minSamples)
+        val rFew = TauEstimator.estimateTau(clean, dt, startIndex = 4, endIndex = 6, noiseFloor = 1.0, minSamples = 4)
+        assertFalse("E: Insufficient samples must return unavailable", rFew.isAvailable)
+        assertTrue("E: Tau must be NaN when insufficient samples", rFew.tauUs.isNaN())
+
+        // F. Poor R2 / non-exponential waveform (constant DC)
+        val flatWaveform = DoubleArray(sampleCount) { 100.0 }
+        val rFlat = TauEstimator.estimateTau(flatWaveform, dt, startIndex = 4, endIndex = 35, noiseFloor = 1.0)
+        assertFalse("F: Flat waveform must return unavailable", rFlat.isAvailable)
+
+        // G. DetectionCalibration controls bounds: minTauUs, maxTauUs, minTauR2, noiseThresholdMultiplier
+        val calStrictR2 = com.example.felezjoo.models.DetectionCalibration(minTauR2 = 0.999)
+        val rStrictR2 = TauEstimator.estimateTau(noisy, dt, startIndex = 4, endIndex = 35, noiseFloor = 2.0, calibration = calStrictR2)
+        assertFalse("G: Strict minTauR2 from calibration must reject imperfect fit", rStrictR2.isAvailable)
+
+        val calMinTau = com.example.felezjoo.models.DetectionCalibration(minTauUs = 30.0) // true tau is 25 us < 30 us
+        val rMinTau = TauEstimator.estimateTau(clean, dt, startIndex = 4, endIndex = 35, noiseFloor = 1.0, calibration = calMinTau)
+        assertFalse("G: Calibration minTauUs must reject faster decays", rMinTau.isAvailable)
+
+        val calMaxTau = com.example.felezjoo.models.DetectionCalibration(maxTauUs = 20.0) // true tau is 25 us > 20 us
+        val rMaxTau = TauEstimator.estimateTau(clean, dt, startIndex = 4, endIndex = 35, noiseFloor = 1.0, calibration = calMaxTau)
+        assertFalse("G: Calibration maxTauUs must reject slower decays", rMaxTau.isAvailable)
+
+        val calHighNoiseMult = com.example.felezjoo.models.DetectionCalibration(noiseThresholdMultiplier = 50.0) // excludes all samples
+        val rHighNoise = TauEstimator.estimateTau(clean, dt, startIndex = 4, endIndex = 35, noiseFloor = 20.0, calibration = calHighNoiseMult)
+        assertFalse("G: Calibration noiseThresholdMultiplier must exclude below-threshold points", rHighNoise.isAvailable)
+    }
+
+    @Test
+    fun testMultiFrameTemporalGroundTrackingSequence() {
+        val dt = 1.6
+        val sampleCount = 70
+        val config = SamplingConfiguration(sampleCount = sampleCount, sampleSpacingUs = dt)
+        val profile = DspProfile.STABLE.copy(
+            groundConfig = com.example.felezjoo.models.GroundTrackingConfig(
+                alpha = 0.05,
+                quietFramesRequired = 2,
+                freezeScore = 30.0,
+                freezeSnr = 4.0
+            )
+        )
+
+        val pipeline = DspPipeline()
+
+        // Pure soil model
+        val soilWaveform = IntArray(sampleCount) { i ->
+            (120.0 * kotlin.math.exp(-(i * dt) / 35.0) + 15.0).toInt()
+        }
+
+        // Initialize ground model to the soil baseline (simulating completed ground balance)
+        pipeline.setGroundDirect(DoubleArray(sampleCount) { i -> soilWaveform[i].toDouble() })
+
+        // Target signal (metal target)
+        val targetSignal = IntArray(sampleCount) { i ->
+            (400.0 * kotlin.math.exp(-(i * dt) / 14.0)).toInt()
+        }
+
+        // ==========================================
+        // PHASE 1: Stable soil only (frames 1..5)
+        // Ground is allowed to converge.
+        // ==========================================
+        for (f in 1..5) {
+            val soilBlock = DecayBlock(sequenceNumber = f.toLong(), timestamp = 1000L + f * 50, delayTicks = 12, rawSamples = soilWaveform.clone(), samplingConfiguration = config)
+            val res = pipeline.processBlock(soilBlock, profile, updateState = true)
+            if (f >= 3) {
+                assertFalse("Phase 1: Ground tracking must be active (unfrozen) during pure stable soil (frame $f)", res.isGroundFrozen)
+            }
+        }
+
+        val groundAfterPhase1 = pipeline.groundCurve.clone()
+
+        // ==========================================
+        // PHASE 2: Target appears (frames 6..10)
+        // Target detection rises. Ground tracking freezes.
+        // The target must NOT be absorbed into ground model.
+        // ==========================================
+        val soilPlusTarget = IntArray(sampleCount) { i -> soilWaveform[i] + targetSignal[i] }
+        for (f in 6..10) {
+            val targetBlock = DecayBlock(sequenceNumber = f.toLong(), timestamp = 1000L + f * 50, delayTicks = 12, rawSamples = soilPlusTarget.clone(), samplingConfiguration = config)
+            val res = pipeline.processBlock(targetBlock, profile, updateState = true)
+            assertTrue("Phase 2: Target score must rise (frame $f, score=${res.featureVector.targetScore})", res.featureVector.targetScore >= 30.0)
+            assertTrue("Phase 2: Ground tracking MUST freeze when target is detected (frame $f)", res.isGroundFrozen)
+            assertTrue("Phase 2: Freeze reason must explain target detection", res.groundFreezeReason.isNotEmpty())
+        }
+
+        val groundAfterPhase2 = pipeline.groundCurve
+        // Verify that ground curve did NOT absorb target
+        for (i in 0 until sampleCount) {
+            assertEquals("Phase 2: Ground curve must remain unchanged while frozen (index $i)", groundAfterPhase1[i], groundAfterPhase2[i], 1e-6)
+        }
+
+        // ==========================================
+        // PHASE 3: Target remains present (frames 11..15)
+        // Ground remains protected from learning target as soil.
+        // ==========================================
+        for (f in 11..15) {
+            val targetBlock = DecayBlock(sequenceNumber = f.toLong(), timestamp = 1000L + f * 50, delayTicks = 12, rawSamples = soilPlusTarget.clone(), samplingConfiguration = config)
+            val res = pipeline.processBlock(targetBlock, profile, updateState = true)
+            assertTrue("Phase 3: Ground must remain frozen while target is held", res.isGroundFrozen)
+        }
+        val groundAfterPhase3 = pipeline.groundCurve
+        for (i in 0 until sampleCount) {
+            assertEquals("Phase 3: Ground model must not learn target as soil (index $i)", groundAfterPhase1[i], groundAfterPhase3[i], 1e-6)
+        }
+
+        // ==========================================
+        // PHASE 4: Target disappears (frames 16..22)
+        // Ground tracking does not instantly jump.
+        // Hysteresis protects ground while target clears coil envelope.
+        // ==========================================
+        val res16 = pipeline.processBlock(DecayBlock(sequenceNumber = 16L, timestamp = 1000L + 16 * 50, delayTicks = 12, rawSamples = soilWaveform.clone(), samplingConfiguration = config), profile, updateState = true)
+        assertTrue("Phase 4 (frame 16): Ground must remain frozen immediately after target exits", res16.isGroundFrozen)
+
+        // Process quiet frames until tracker clears lingering detection and quiet requirement is fulfilled
+        var unfrozenFrame = -1
+        for (f in 17..36) {
+            val qBlock = DecayBlock(sequenceNumber = f.toLong(), timestamp = 1000L + f * 50, delayTicks = 12, rawSamples = soilWaveform.clone(), samplingConfiguration = config)
+            val res = pipeline.processBlock(qBlock, profile, updateState = true)
+            if (!res.isGroundFrozen) {
+                unfrozenFrame = f
+                break
+            }
+        }
+        assertTrue("Phase 4: Ground tracking must resume once persistence and quiet frames conditions are fulfilled (unfrozen=$unfrozenFrame)", unfrozenFrame > 0)
+
+        // ==========================================
+        // PHASE 5: Soil baseline slowly drifts with no target (frames 37..50)
+        // Ground tracking resumes and follows drifted ground condition according to profile alpha.
+        // ==========================================
+        val groundBeforeDrift = pipeline.groundCurve.clone()
+
+        for (f in 37..50) {
+            val driftFactor = 1.0 + (f - 36) * 0.002 // gradual 0.2% drift per frame
+            val driftedSoil = IntArray(sampleCount) { i -> (soilWaveform[i] * driftFactor).toInt() }
+            val driftBlock = DecayBlock(sequenceNumber = f.toLong(), timestamp = 1000L + f * 50, delayTicks = 12, rawSamples = driftedSoil, samplingConfiguration = config)
+            val res = pipeline.processBlock(driftBlock, profile, updateState = true)
+            assertFalse("Phase 5: Ground tracking must actively adapt to gradual soil drift (frame $f, reason=${res.groundFreezeReason})", res.isGroundFrozen)
+        }
+
+        val groundAfterPhase5 = pipeline.groundCurve
+        val finalDriftedSoil = IntArray(sampleCount) { i -> (soilWaveform[i] * (1.0 + (50 - 36) * 0.002)).toInt() }
+
+        // Verify that ground tracked toward the drifted soil in the active decay region
+        assertTrue("Ground curve must track upwards following positive drift at sample 10", groundAfterPhase5[10] > groundBeforeDrift[10])
+        assertTrue("Ground curve must track upwards following positive drift at sample 20", groundAfterPhase5[20] > groundBeforeDrift[20])
+    }
+
+    @Test
+    fun testDifferentGroundAlphaConvergenceSpeeds() {
+        val dt = 1.6
+        val sampleCount = 70
+        val config = SamplingConfiguration(sampleCount = sampleCount, sampleSpacingUs = dt)
+
+        val pipelineFast = DspPipeline()
+        val pipelineSlow = DspPipeline()
+
+        // Profile 1: FAST_RESPONSE (alpha = 0.08)
+        val profileFast = DspProfile.FAST_RESPONSE
+        // Profile 2: MAXIMUM_DEPTH (alpha = 0.005)
+        val profileSlow = DspProfile.MAXIMUM_DEPTH
+
+        val initialSoil = IntArray(sampleCount) { 80 }
+        val steppedSoil = IntArray(sampleCount) { 140 } // +60 step change in ground level
+
+        // Initialize both pipelines to initial soil (5 quiet frames)
+        for (f in 1..5) {
+            val b = DecayBlock(sequenceNumber = f.toLong(), timestamp = f * 50L, delayTicks = 12, rawSamples = initialSoil.clone(), samplingConfiguration = config)
+            pipelineFast.processBlock(b, profileFast, updateState = true)
+            pipelineSlow.processBlock(b, profileSlow, updateState = true)
+        }
+
+        // Apply stepped soil for 8 frames
+        for (f in 6..13) {
+            val b = DecayBlock(sequenceNumber = f.toLong(), timestamp = f * 50L, delayTicks = 12, rawSamples = steppedSoil.clone(), samplingConfiguration = config)
+            pipelineFast.processBlock(b, profileFast, updateState = true)
+            pipelineSlow.processBlock(b, profileSlow, updateState = true)
+        }
+
+        val fastGround = pipelineFast.groundCurve
+        val slowGround = pipelineSlow.groundCurve
+
+        val fastDelta = fastGround[20] - initialSoil[20]
+        val slowDelta = slowGround[20] - initialSoil[20]
+
+        // Fast profile (alpha=0.08) must adapt significantly more than slow profile (alpha=0.005)
+        assertTrue(
+            "Fast profile ground adaptation ($fastDelta) must be much greater than slow profile ($slowDelta)",
+            fastDelta > slowDelta * 4.0
+        )
+    }
+
+    @Test
+    fun testSemanticHonestyAndBoundaries() {
+        val config = SamplingConfiguration(sampleCount = 70, sampleSpacingUs = 1.6)
+        val (block, _) = SimulationEngine.generatePhysicsBlock(
+            seq = 200L,
+            currentAmp = 50.0,
+            tauUs = 20.0,
+            isFerrous = false,
+            groundAmp = 10.0,
+            noiseStdDev = 2.0,
+            polarity = WaveformPolarity.POSITIVE,
+            config = config
+        )
+
+        val pipeline = DspPipeline()
+        val result = pipeline.processBlock(block, DspProfile.STABLE, updateState = false)
+        val fv = result.featureVector
+
+        // 1. Confidence score is heuristic engineering metric 0..100, not probability
+        assertEquals("confidenceScore must equal targetConfidence", fv.targetConfidence, fv.confidenceScore, 1e-9)
+        assertTrue("confidenceScore must be bounded in [0, 100]", fv.confidenceScore in 0.0..100.0)
+
+        // 2. Ferrous score is heuristic likelihood metric 0..100, not calibrated material identification
+        assertEquals("ferrousScore must equal ironScore", fv.ironScore, fv.ferrousScore, 1e-9)
+        assertEquals("ferrousLikelihoodScore must equal ironScore", fv.ironScore, fv.ferrousLikelihoodScore, 1e-9)
+        assertTrue("ferrousScore must be bounded in [0, 100]", fv.ferrousScore in 0.0..100.0)
+
+        // 3. Effective single-exponential Tau matches estimatedTauUs
+        assertEquals("effectiveTauUs must equal estimatedTauUs", fv.estimatedTauUs, fv.effectiveTauUs, 1e-9)
+        assertEquals("tauUs must equal estimatedTauUs", fv.estimatedTauUs, fv.tauUs, 1e-9)
+
+        // 4. Target ID is explicitly unavailable
+        assertEquals("Target ID must be 0 (unavailable)", 0, fv.targetId)
+        assertFalse("Target ID must not report as calibrated", fv.isTargetIdCalibrated)
+
+        // 5. updateState = false guarantees zero mutation of pipeline internal models
+        val gBefore = pipeline.groundCurve.clone()
+        val bBefore = pipeline.baselineCurve.clone()
+        pipeline.processBlock(block, DspProfile.STABLE, updateState = false)
+        val gAfter = pipeline.groundCurve
+        val bAfter = pipeline.baselineCurve
+        assertTrue("updateState=false must cause zero ground mutation", gBefore.contentEquals(gAfter))
+        assertTrue("updateState=false must cause zero baseline mutation", bBefore.contentEquals(bAfter))
     }
 }

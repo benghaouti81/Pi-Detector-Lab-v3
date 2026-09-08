@@ -90,7 +90,7 @@ class SafeGroundTracker {
         ) {
             frozen = true
             reason = "TARGET DETECTED (${classification.label})"
-        } else if (peakSignal > (noiseFloor * gConfig.freezePeakNoiseMultiplier)) {
+        } else if (peakSignal > (kotlin.math.max(noiseFloor, 1.0) * gConfig.freezePeakNoiseMultiplier)) {
             frozen = true
             reason = "PEAK SIGNAL EXCEEDS GROUND NOISE"
         }
