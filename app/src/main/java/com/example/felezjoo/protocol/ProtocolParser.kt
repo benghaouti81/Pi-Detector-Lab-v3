@@ -140,40 +140,78 @@ class ProtocolParser(
 
     private fun handleAsciiLine(line: String) {
         onAsciiLineParsed(line)
-        if (line.startsWith("#CONFIG:")) {
+        if (line.startsWith("#CONFIG:") || line.startsWith("#CONFIG,")) {
             parseConfigLine(line)
         }
     }
 
     /**
-     * Parses #CONFIG:<sampleCount>,<sampleSpacingNs>,<adcBits>,<mode>,<pulses>,<samplesPerPulse>
+     * Parses hardware configuration announcements:
+     * Comma-delimited: #CONFIG:<sampleCount>,<sampleSpacingNs>,<adcBits>,<mode>,<pulses>,<samplesPerPulse>
      * e.g. #CONFIG:70,1600,10,ETS,14,5
+     * Or key-value: #CONFIG,samples=70,spacing_ns=1600,adc=10,mode=ETS,pulses=14,samples_per_pulse=5
      */
     fun parseConfigLine(line: String) {
         try {
-            val content = line.substringAfter("#CONFIG:").trim()
+            val delimiter = if (line.startsWith("#CONFIG:")) ":" else ","
+            val content = line.substringAfter(delimiter).trim()
             val tokens = content.split(",")
-            if (tokens.size >= 6) {
-                val sampleCount = tokens[0].toIntOrNull() ?: 70
-                val spacingNs = tokens[1].toDoubleOrNull() ?: 1600.0
-                val adcBits = tokens[2].toIntOrNull() ?: 10
-                val mode = tokens[3]
-                val pulses = tokens[4].toIntOrNull() ?: 14
-                val samplesPerPulse = tokens[5].toIntOrNull() ?: 5
 
-                val newConfig = SamplingConfiguration(
-                    id = "device_reported_${sampleCount}",
-                    sampleCount = sampleCount,
-                    sampleSpacingUs = spacingNs / 1000.0,
-                    samplingMode = mode,
-                    pulsesPerFrame = pulses,
-                    samplesPerPulse = samplesPerPulse,
-                    adcResolution = adcBits,
-                    delayUnitUs = spacingNs / 1000.0
-                )
-                activeSamplingConfig = newConfig
-                onAsciiLineParsed("ACK: Config updated ($sampleCount samples, ${spacingNs / 1000.0}us, $mode)")
+            var sampleCount = 70
+            var spacingNs = 1600.0
+            var adcBits = 10
+            var mode = "ETS"
+            var pulses = 14
+            var samplesPerPulse = 5
+
+            if (content.contains("=")) {
+                // Key-value pairs
+                for (token in tokens) {
+                    val kv = token.split("=")
+                    if (kv.size == 2) {
+                        val k = kv[0].trim().lowercase()
+                        val v = kv[1].trim()
+                        when (k) {
+                            "samples", "sample_count", "n" -> v.toIntOrNull()?.let { sampleCount = it }
+                            "spacing_ns", "dt_ns", "step_ns" -> v.toDoubleOrNull()?.let { spacingNs = it }
+                            "spacing_us", "dt_us" -> v.toDoubleOrNull()?.let { spacingNs = it * 1000.0 }
+                            "adc", "adc_bits", "bits" -> v.toIntOrNull()?.let { adcBits = it }
+                            "mode" -> mode = v
+                            "pulses", "pulses_per_frame" -> v.toIntOrNull()?.let { pulses = it }
+                            "samples_per_pulse", "spp" -> v.toIntOrNull()?.let { samplesPerPulse = it }
+                        }
+                    }
+                }
+            } else if (tokens.size >= 2) {
+                // Positional tokens
+                tokens.getOrNull(0)?.toIntOrNull()?.let { sampleCount = it }
+                tokens.getOrNull(1)?.toDoubleOrNull()?.let { spacingNs = it }
+                tokens.getOrNull(2)?.toIntOrNull()?.let { adcBits = it }
+                tokens.getOrNull(3)?.let { if (it.isNotBlank()) mode = it.trim() }
+                tokens.getOrNull(4)?.toIntOrNull()?.let { pulses = it }
+                tokens.getOrNull(5)?.toIntOrNull()?.let { samplesPerPulse = it }
             }
+
+            // Safe physical clamping
+            sampleCount = sampleCount.coerceIn(10, 512)
+            spacingNs = spacingNs.coerceIn(50.0, 1000000.0)
+            adcBits = adcBits.coerceIn(8, 24)
+            pulses = pulses.coerceIn(1, 128)
+            samplesPerPulse = samplesPerPulse.coerceIn(1, 128)
+
+            val spacingUs = spacingNs / 1000.0
+            val newConfig = SamplingConfiguration(
+                id = "device_reported_${sampleCount}",
+                sampleCount = sampleCount,
+                sampleSpacingUs = spacingUs,
+                samplingMode = mode,
+                pulsesPerFrame = pulses,
+                samplesPerPulse = samplesPerPulse,
+                adcResolution = adcBits,
+                delayUnitUs = spacingUs
+            )
+            activeSamplingConfig = newConfig
+            onAsciiLineParsed("ACK: Config updated ($sampleCount samples, ${spacingUs}us, $mode)")
         } catch (e: Exception) {
             onAsciiLineParsed("ERR: Config parse error: ${e.message}")
         }

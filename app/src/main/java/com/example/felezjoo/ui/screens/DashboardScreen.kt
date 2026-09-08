@@ -233,7 +233,8 @@ fun DashboardScreen(viewModel: FelezJooViewModel) {
             TechnicalStatBadge("INTEG AREA", "%.0f".format(fv?.area ?: 0.0), "", LabPrimary)
             TechnicalStatBadge("PERSISTENCE", "%.0f".format(fv?.persistence ?: 0.0), "%", LabSecondary)
             TechnicalStatBadge("DELAY", "${currentBlock.delayTicks}", "ticks (%.1fµs)".format(currentBlock.delayUs), LabPrimary)
-            TechnicalStatBadge("ETS FRAMING", "14×5", "70 pts", Color(0xFF40C4FF))
+            val sc = currentBlock.samplingConfiguration
+            TechnicalStatBadge("ETS FRAMING", "${sc.pulsesPerFrame}×${sc.samplesPerPulse}", "${sc.sampleCount} pts", Color(0xFF40C4FF))
         }
 
         if (isSimulation) {

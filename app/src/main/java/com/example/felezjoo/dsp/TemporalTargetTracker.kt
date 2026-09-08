@@ -35,6 +35,7 @@ class TemporalTargetTracker {
     val requiredCandidateFrames = 2
     val requiredQuietFramesToLose = 3
 
+    @Synchronized
     fun reset() {
         state = TrackerState.NO_TARGET
         candidateCount = 0
@@ -44,7 +45,9 @@ class TemporalTargetTracker {
 
     /**
      * Process a frame's feature vector and update tracker state.
+     * When updateState is false, guarantees pure read-only behavior with zero mutation.
      */
+    @Synchronized
     fun processFrame(
         featureVector: FeatureVector,
         classification: TargetClassification,

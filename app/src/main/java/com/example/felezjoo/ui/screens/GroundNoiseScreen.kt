@@ -142,7 +142,7 @@ fun GroundNoiseScreen(viewModel: FelezJooViewModel) {
                         FilterChip(
                             selected = activeProfile.groundSpeed == spd,
                             onClick = {
-                                viewModel.updateProfile(activeProfile.copy(groundSpeed = spd))
+                                viewModel.updateProfile(activeProfile.copyWithGroundSpeed(spd))
                             },
                             label = { Text(spd.name, fontSize = 9.sp) },
                             modifier = Modifier.padding(horizontal = 2.dp).height(26.dp)

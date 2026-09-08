@@ -83,6 +83,13 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        val sc = currentBlock.samplingConfiguration
+        val maxUs = (sc.sampleCount * sc.sampleSpacingUs).toFloat().coerceAtLeast(50f)
+        val (intStartIdx, intEndIdx) = activeProfile.getIntegrationIndices(sc)
+        val (aStartIdx, aEndIdx) = activeProfile.getRegionAIndices(sc)
+        val (bStartIdx, bEndIdx) = activeProfile.getRegionBIndices(sc)
+        val (cStartIdx, cEndIdx) = activeProfile.getRegionCIndices(sc)
+
         // Boundary Sliders
         Surface(
             color = LabSurface,
@@ -91,16 +98,25 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
-                Text("SAMPLE WINDOW BOUNDARIES (0 .. 69)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabSecondary)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("PHYSICAL TIME WINDOWS (0 .. %.0f µs)".format(maxUs), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabSecondary)
+                    Text("dt = %.2f µs (%s)".format(sc.sampleSpacingUs, sc.samplingMode), fontSize = 10.sp, color = LabTextSecondary, fontFamily = FontFamily.Monospace)
+                }
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Integration Window Slider
                 RegionRangeSlider(
                     label = "Integration Window",
                     color = LabPrimary,
-                    range = activeProfile.integrationStartSample.toFloat()..activeProfile.integrationEndSample.toFloat(),
+                    range = activeProfile.integrationStartUs.toFloat().coerceIn(0f, maxUs)..activeProfile.integrationEndUs.toFloat().coerceIn(0f, maxUs),
+                    maxUs = maxUs,
+                    sampleIndices = "S$intStartIdx .. S${(intEndIdx - 1).coerceAtLeast(intStartIdx)}",
                     onRangeChange = { r ->
-                        viewModel.updateProfile(activeProfile.copy(integrationStartSample = r.start.toInt(), integrationEndSample = r.endInclusive.toInt()))
+                        viewModel.updateProfile(activeProfile.copy(integrationStartUs = r.start.toDouble(), integrationEndUs = r.endInclusive.toDouble()))
                     }
                 )
 
@@ -108,9 +124,11 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
                 RegionRangeSlider(
                     label = "Region A (Early)",
                     color = Color(0xFF00E5FF),
-                    range = activeProfile.aStartSample.toFloat()..activeProfile.aEndSample.toFloat(),
+                    range = activeProfile.aStartUs.toFloat().coerceIn(0f, maxUs)..activeProfile.aEndUs.toFloat().coerceIn(0f, maxUs),
+                    maxUs = maxUs,
+                    sampleIndices = "S$aStartIdx .. S${(aEndIdx - 1).coerceAtLeast(aStartIdx)}",
                     onRangeChange = { r ->
-                        viewModel.updateProfile(activeProfile.copy(aStartSample = r.start.toInt(), aEndSample = r.endInclusive.toInt()))
+                        viewModel.updateProfile(activeProfile.copy(regionAStartUs = r.start.toDouble(), regionAEndUs = r.endInclusive.toDouble()))
                     }
                 )
 
@@ -118,9 +136,11 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
                 RegionRangeSlider(
                     label = "Region B (Mid)",
                     color = Color(0xFF76FF03),
-                    range = activeProfile.bStartSample.toFloat()..activeProfile.bEndSample.toFloat(),
+                    range = activeProfile.bStartUs.toFloat().coerceIn(0f, maxUs)..activeProfile.bEndUs.toFloat().coerceIn(0f, maxUs),
+                    maxUs = maxUs,
+                    sampleIndices = "S$bStartIdx .. S${(bEndIdx - 1).coerceAtLeast(bStartIdx)}",
                     onRangeChange = { r ->
-                        viewModel.updateProfile(activeProfile.copy(bStartSample = r.start.toInt(), bEndSample = r.endInclusive.toInt()))
+                        viewModel.updateProfile(activeProfile.copy(regionBStartUs = r.start.toDouble(), regionBEndUs = r.endInclusive.toDouble()))
                     }
                 )
 
@@ -128,9 +148,11 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
                 RegionRangeSlider(
                     label = "Region C (Late)",
                     color = Color(0xFFFFD600),
-                    range = activeProfile.cStartSample.toFloat()..activeProfile.cEndSample.toFloat(),
+                    range = activeProfile.cStartUs.toFloat().coerceIn(0f, maxUs)..activeProfile.cEndUs.toFloat().coerceIn(0f, maxUs),
+                    maxUs = maxUs,
+                    sampleIndices = "S$cStartIdx .. S${(cEndIdx - 1).coerceAtLeast(cStartIdx)}",
                     onRangeChange = { r ->
-                        viewModel.updateProfile(activeProfile.copy(cStartSample = r.start.toInt(), cEndSample = r.endInclusive.toInt()))
+                        viewModel.updateProfile(activeProfile.copy(regionCStartUs = r.start.toDouble(), regionCEndUs = r.endInclusive.toDouble()))
                     }
                 )
             }
@@ -173,28 +195,32 @@ private fun RegionRangeSlider(
     label: String,
     color: Color,
     range: ClosedFloatingPointRange<Float>,
+    maxUs: Float,
+    sampleIndices: String,
     onRangeChange: (ClosedFloatingPointRange<Float>) -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, fontSize = 11.sp, color = color, fontWeight = FontWeight.Bold, modifier = Modifier.width(130.dp))
+        Column(modifier = Modifier.width(135.dp)) {
+            Text(label, fontSize = 11.sp, color = color, fontWeight = FontWeight.Bold)
+            Text(sampleIndices, fontSize = 9.sp, color = LabTextSecondary, fontFamily = FontFamily.Monospace)
+        }
         RangeSlider(
             value = range,
             onValueChange = onRangeChange,
-            valueRange = 0f..69f,
-            steps = 68,
+            valueRange = 0f..maxUs,
             colors = SliderDefaults.colors(thumbColor = color, activeTrackColor = color),
             modifier = Modifier.weight(1f)
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
-            "[${range.start.toInt()} .. ${range.endInclusive.toInt()}]",
-            fontSize = 11.sp,
+            "%.1f..%.1fµs".format(range.start, range.endInclusive),
+            fontSize = 10.sp,
             fontFamily = FontFamily.Monospace,
             color = Color.White,
-            modifier = Modifier.width(60.dp)
+            modifier = Modifier.width(76.dp)
         )
     }
 }

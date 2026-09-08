@@ -61,23 +61,25 @@ class SafeGroundTracker {
     ): GroundAdaptationStatus {
         val size = groundCurve.size
 
+        val gConfig = profile.groundConfig
+
         // 1. Check freeze conditions
         var frozen = false
         var reason = "ADAPTING"
 
-        if (profile.groundSpeed.alpha <= 0.0) {
+        if (!gConfig.enabled || gConfig.alpha <= 0.0) {
             frozen = true
             reason = "GROUND TRACKING OFF"
         } else if (isSaturated) {
             frozen = true
             reason = "ADC SATURATED"
-        } else if (targetScore >= profile.groundFreezeScore) {
+        } else if (targetScore >= gConfig.freezeScore) {
             frozen = true
             reason = "TARGET SCORE HIGH (%.1f)".format(targetScore)
-        } else if (snr >= profile.groundFreezeSnr) {
+        } else if (snr >= gConfig.freezeSnr) {
             frozen = true
             reason = "SNR HIGH (%.1f)".format(snr)
-        } else if (persistence >= profile.groundFreezePersistence) {
+        } else if (persistence >= gConfig.freezePersistence) {
             frozen = true
             reason = "TARGET PERSISTENCE (%.1f%%)".format(persistence)
         } else if (classification == TargetClassification.FERROUS_LIKELY ||
@@ -88,7 +90,7 @@ class SafeGroundTracker {
         ) {
             frozen = true
             reason = "TARGET DETECTED (${classification.label})"
-        } else if (peakSignal > (noiseFloor * 2.8)) {
+        } else if (peakSignal > (noiseFloor * gConfig.freezePeakNoiseMultiplier)) {
             frozen = true
             reason = "PEAK SIGNAL EXCEEDS GROUND NOISE"
         }
@@ -98,20 +100,20 @@ class SafeGroundTracker {
             newQuietFrames = 0
         } else {
             newQuietFrames++
-            // Require at least 2 consecutive quiet frames before unfreezing
-            if (newQuietFrames < 2) {
+            // Require configured consecutive quiet frames before unfreezing
+            if (newQuietFrames < gConfig.quietFramesRequired) {
                 frozen = true
-                reason = "AWAITING QUIET FRAMES ($newQuietFrames/2)"
+                reason = "AWAITING QUIET FRAMES ($newQuietFrames/${gConfig.quietFramesRequired})"
             }
         }
 
         var maxDelta = 0.0
 
         if (!frozen && applyUpdate) {
-            val baseAlpha = profile.groundAlpha.coerceIn(0.0, 0.2)
-            val earlyMult = profile.groundEarlyAlphaMultiplier
-            val lateMult = profile.groundLateAlphaMultiplier
-            val maxStep = profile.groundMaxStepPerFrame
+            val baseAlpha = gConfig.alpha.coerceIn(0.0, 0.2)
+            val earlyMult = gConfig.earlyMultiplier
+            val lateMult = gConfig.lateMultiplier
+            val maxStep = gConfig.maxStep
 
             val earlyCutoff = (size * 0.30).toInt().coerceIn(1, size)
 

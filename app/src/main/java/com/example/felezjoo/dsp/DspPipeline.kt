@@ -20,7 +20,7 @@ data class DspCalculationResult(
     val block: DecayBlock,
     val filteredCurve: DoubleArray,
     val baselineCurve: DoubleArray,
-    val groundCurve: DoubleArray,
+    val groundCurve: DoubleArray, // Snapshot of ground model used to compute this frame's residual
     val residualCurve: DoubleArray,
     val firstDerivative: DoubleArray,
     val secondDerivative: DoubleArray,
@@ -30,7 +30,8 @@ data class DspCalculationResult(
     val detectionCurve: DoubleArray = filteredCurve,
     val tauFitResult: TauFitResult = TauFitResult.UNAVAILABLE,
     val isGroundFrozen: Boolean = false,
-    val groundFreezeReason: String = ""
+    val groundFreezeReason: String = "",
+    val postUpdateGroundCurve: DoubleArray = groundCurve
 )
 
 /**
@@ -106,7 +107,8 @@ class DspPipeline {
         // Ensures samples represent monotonic physical time t = i * dt
         val rawChronological = EtsReconstruction.toChronological(block.rawSamples, config)
         val count = rawChronological.size
-        val dt = if (block.sampleSpacingUs > 0.0) block.sampleSpacingUs else 1.6
+        // Hardware sampling spacing: derived from block or active sampling configuration (never a blind hardcoded constant)
+        val dt = if (block.sampleSpacingUs > 0.0) block.sampleSpacingUs else config.sampleSpacingUs
 
         // 2. Thread-safe snapshot of baseline and ground models
         val activeBaseline: DoubleArray
@@ -166,7 +168,7 @@ class DspPipeline {
 
         // 9. Peak and Amplitude Detection in Physical Integration Window
         val (validStart, validEnd) = profile.getIntegrationIndices(config)
-        var peakSignal = 0.0
+        var peakNormalized = 0.0
         var peakIndex = validStart
         var maxResidual = -Double.MAX_VALUE
         var minResidual = Double.MAX_VALUE
@@ -182,8 +184,8 @@ class DspPipeline {
 
             if (i in validStart until validEnd) {
                 val detVal = detectionCurve[i]
-                if (detVal > peakSignal) {
-                    peakSignal = detVal
+                if (detVal > peakNormalized) {
+                    peakNormalized = detVal
                     peakIndex = i
                 }
             }
@@ -191,7 +193,9 @@ class DspPipeline {
         val residualRms = sqrt(residualSqSum / count.coerceAtLeast(1))
         val peakTimeUs = peakIndex * dt
         val peakSigned = rawResidual[peakIndex]
-        val snr = (peakSignal / (noiseFloor + 0.001)).coerceAtLeast(0.0)
+        val peakAbsolute = abs(rawResidual[peakIndex])
+        val peakSignal = peakNormalized
+        val snr = (peakNormalized / (noiseFloor + 0.001)).coerceAtLeast(0.0)
 
         // 10. Physical Integration (microsecond time integral: sum(V[i] * w[i] * dt))
         var integralSum = 0.0
@@ -245,12 +249,14 @@ class DspPipeline {
         val curvature = computeRegionMean(d2, aStart, bEnd)
 
         // 12. Scientific Tau Estimation via Multi-Point Log-Linear Regression
+        // Uses normalizedResidual (the unskewed measurement path), NOT detectionCurve (which has non-linear median filter distortion)
         val tauResult = TauEstimator.estimateTau(
-            waveform = detectionCurve,
+            waveform = normalizedResidual,
             sampleSpacingUs = dt,
             startIndex = validStart,
             endIndex = validEnd,
-            noiseFloor = noiseFloor
+            noiseFloor = noiseFloor,
+            saturationThreshold = (config.adcFullScale - 5.0)
         )
 
         // 13. Persistence & Stability Tracking
@@ -296,15 +302,10 @@ class DspPipeline {
         // Smooth exponential decay, high tau, sustained late response => Non-ferrous
         val ironScore = calculateFerrousScore(aDivB, bDivC, earlyLateRatio, curvature, slopeA, tauResult)
 
-        // 17. Deterministic Target ID (0-99)
-        // Strictly avoids random numbers or synthetic seeds.
-        // Uses physical time constant tau and conductance ratio.
-        val targetId = calculateDeterministicTargetId(
-            isTarget = (targetScore >= profile.targetThreshold && confidence >= 25.0),
-            tauResult = tauResult,
-            aDivB = aDivB,
-            earlyLateRatio = earlyLateRatio
-        )
+        // 17. Target ID: Uncalibrated
+        // No physical VDI calibration dataset exists for this detector hardware and coil set.
+        // Returning 0 indicates UNAVAILABLE / NOT CALIBRATED.
+        val targetId = 0
 
         // 18. Objective Target Classification
         val classification = determineClassification(targetScore, confidence, ironScore, profile)
@@ -346,10 +347,11 @@ class DspPipeline {
 
         // 20. Temporal Target Tracking State Machine
         val fv = FeatureVector(
-            amplitude = peakSignal,
-            peak = peakSignal,
+            amplitude = peakNormalized,
+            peak = peakNormalized,
+            peakNormalized = peakNormalized,
             peakSigned = peakSigned,
-            peakAbsolute = peakSignal,
+            peakAbsolute = peakAbsolute,
             peakIndex = peakIndex,
             peakTimeUs = peakTimeUs,
             minimum = minResidual,
@@ -375,7 +377,7 @@ class DspPipeline {
             slopeC = slopeC,
             curvature = curvature,
             earlyLateRatio = earlyLateRatio,
-            residualPeak = peakSignal,
+            residualPeak = peakNormalized,
             residualArea = integrationArea,
             groundDifference = activeGround.average(),
             persistence = persistence,
@@ -384,6 +386,7 @@ class DspPipeline {
             targetConfidence = confidence,
             ironScore = ironScore,
             targetId = targetId,
+            isTargetIdCalibrated = false,
             classification = classification,
             noiseMad = noiseMad,
             areaNorm = (integrationArea / count.coerceAtLeast(1)).coerceAtLeast(0.0),
@@ -415,6 +418,12 @@ class DspPipeline {
             targetTracker.processFrame(fv, classification, block.timestamp, updateState = true)
         }
 
+        val finalGroundSnapshot = if (updateState) {
+            synchronized(stateLock) { groundCurve.clone() }
+        } else {
+            activeGround
+        }
+
         return DspCalculationResult(
             block = block,
             filteredCurve = discriminationCurve,
@@ -429,7 +438,8 @@ class DspPipeline {
             targetClassification = classification,
             tauFitResult = tauResult,
             isGroundFrozen = groundAdaptationStatus.isFrozen,
-            groundFreezeReason = groundAdaptationStatus.freezeReason
+            groundFreezeReason = groundAdaptationStatus.freezeReason,
+            postUpdateGroundCurve = finalGroundSnapshot
         )
     }
 
@@ -526,36 +536,6 @@ class DspPipeline {
         return score.coerceIn(0.0, 100.0)
     }
 
-    /**
-     * Deterministic, physics-based Target ID calculation.
-     * Guaranteed NO random numbers, NO cosmetic VDI generators.
-     * Returns 0 if no target is present.
-     */
-    private fun calculateDeterministicTargetId(
-        isTarget: Boolean,
-        tauResult: TauFitResult,
-        aDivB: Double,
-        earlyLateRatio: Double
-    ): Int {
-        if (!isTarget) return 0
-
-        // If high-quality exponential fit was achieved, map physical tau (us) to Target ID:
-        // Tau ~ 5-10 us -> Small iron/foil/small gold (~15-35)
-        // Tau ~ 10-25 us -> Nickel/brass/jewelry (~40-65)
-        // Tau ~ 25-60+ us -> Copper/silver/large high-conductivity (~70-95)
-        if (tauResult.isAvailable && !tauResult.tauUs.isNaN()) {
-            val normalizedTau = (tauResult.tauUs - 4.0) / (55.0 - 4.0)
-            val id = (15.0 + normalizedTau.coerceIn(0.0, 1.0) * 80.0).toInt()
-            return id.coerceIn(10, 95)
-        }
-
-        // Fallback to ratio-based deterministic mapping:
-        // High early/late ratio means fast decay (low ID)
-        val decayMetric = (aDivB * 0.6 + earlyLateRatio * 0.4).coerceIn(1.0, 8.0)
-        val id = (95.0 - (decayMetric - 1.0) * 11.5).toInt()
-        return id.coerceIn(10, 95)
-    }
-
     private fun determineClassification(
         score: Double,
         confidence: Double,
@@ -575,10 +555,15 @@ class DspPipeline {
     /**
      * Experimental Auto Delay analysis.
      * Analyzes early samples to detect coil flyback dissipation and returns recommended delay index.
+     * Time is derived from active hardware sample spacing (t = sampleIndex * dt).
      */
-    fun findAutoDelay(raw: IntArray): Triple<Int, Double, Double> {
+    fun findAutoDelay(
+        raw: IntArray,
+        config: com.example.felezjoo.models.SamplingConfiguration = com.example.felezjoo.models.SamplingConfiguration()
+    ): Triple<Int, Double, Double> {
         val count = raw.size
-        if (count < 10) return Triple(8, 12.8, 50.0)
+        val dt = if (config.sampleSpacingUs > 0.0) config.sampleSpacingUs else config.delayUnitUs
+        if (count < 10) return Triple(8, 8 * dt, 50.0)
 
         var bestIndex = 8
         var bestConfidence = 75.0
@@ -592,7 +577,7 @@ class DspPipeline {
                 break
             }
         }
-        val delayUs = bestIndex * 1.6
+        val delayUs = bestIndex * dt
         return Triple(bestIndex, delayUs, bestConfidence)
     }
 }

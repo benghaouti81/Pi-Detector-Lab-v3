@@ -53,7 +53,8 @@ fun LiveWaveformScreen(viewModel: FelezJooViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("OSCILLOSCOPE WAVEFORM (ETS 70-PTS)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabPrimary)
+            val sc = currentBlock.samplingConfiguration
+            Text("OSCILLOSCOPE WAVEFORM (${sc.samplingMode} ${sc.sampleCount}-PTS)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabPrimary)
             Text(
                 "SEQ: #${currentBlock.sequenceNumber} | DELAY: %.1f µs".format(currentBlock.delayUs),
                 fontSize = 11.sp,

@@ -216,7 +216,7 @@ class FelezJooDspAndProtocolTest {
     }
 
     @Test
-    fun testDeterministicTargetId() {
+    fun testTargetIdUncalibratedPolicy() {
         val pipeline = DspPipeline()
         val scope = CoroutineScope(Dispatchers.Unconfined)
         val simEngine = SimulationEngine(scope) { _, _ -> }
@@ -227,7 +227,8 @@ class FelezJooDspAndProtocolTest {
         pipeline.captureAirBaseline(DoubleArray(70) { cleanBlock.rawSamples[it].toDouble() })
         val cleanResult = pipeline.processBlock(cleanBlock, DspProfile.STABLE)
 
-        assertEquals("Target ID must be exactly 0 when no target is present (No fake numbers)", 0, cleanResult.featureVector.targetId)
+        assertEquals("Target ID must be 0 when uncalibrated", 0, cleanResult.featureVector.targetId)
+        assertFalse("isTargetIdCalibrated must be false without physical VDI dataset", cleanResult.featureVector.isTargetIdCalibrated)
 
         // Repeatable copper target
         simEngine.targetType = SimulationTargetType.COPPER_COIN
@@ -236,8 +237,38 @@ class FelezJooDspAndProtocolTest {
         val r1 = pipeline.processBlock(copperBlock, DspProfile.STABLE, updateState = false)
         val r2 = pipeline.processBlock(copperBlock, DspProfile.STABLE, updateState = false)
 
-        assertEquals("Target ID must be deterministic across runs", r1.featureVector.targetId, r2.featureVector.targetId)
-        assertTrue("Copper coin target ID must be > 0", r1.featureVector.targetId > 0)
+        assertEquals("Target ID must be 0 (no fake numbers)", 0, r1.featureVector.targetId)
+        assertFalse("Target ID must not report as calibrated", r1.featureVector.isTargetIdCalibrated)
+        assertEquals("Results must be deterministic", r1.featureVector.targetScore, r2.featureVector.targetScore, 0.001)
+    }
+
+    @Test
+    fun testPhysicalTimingWindowMapping() {
+        // Leonardo default: 1.6 us spacing
+        val leonardoConfig = SamplingConfiguration(sampleCount = 70, sampleSpacingUs = 1.6)
+        val (startIdx, endIdx) = leonardoConfig.physicalRangeToIndices(12.8, 48.0)
+        assertEquals(8, startIdx)
+        assertEquals(30, endIdx)
+
+        // Custom high-speed ADC: 0.8 us spacing, 100 samples
+        val fastConfig = SamplingConfiguration(sampleCount = 100, sampleSpacingUs = 0.8)
+        val (fastStart, fastEnd) = fastConfig.physicalRangeToIndices(12.8, 48.0)
+        assertEquals(16, fastStart)
+        assertEquals(60, fastEnd)
+
+        // Profile window derivation
+        val profile = DspProfile.STABLE
+        val (pStart, pEnd) = profile.getIntegrationIndices(leonardoConfig)
+        assertTrue(pStart >= 0)
+        assertTrue(pEnd <= 70)
+        assertTrue(pEnd > pStart)
+
+        val (aStart, aEnd) = profile.getRegionAIndices(leonardoConfig)
+        val (bStart, bEnd) = profile.getRegionBIndices(leonardoConfig)
+        val (cStart, cEnd) = profile.getRegionCIndices(leonardoConfig)
+        assertTrue(aStart <= aEnd)
+        assertTrue(bStart <= bEnd)
+        assertTrue(cStart <= cEnd)
     }
 
     @Test

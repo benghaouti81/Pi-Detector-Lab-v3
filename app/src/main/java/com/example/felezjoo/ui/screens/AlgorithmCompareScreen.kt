@@ -100,7 +100,7 @@ fun AlgorithmCompareScreen(viewModel: FelezJooViewModel) {
                         MetricBlock("Score", "%.1f".format(fv.targetScore), LabPrimary)
                         MetricBlock("Conf", "%.0f%%".format(fv.targetConfidence), LabSecondary)
                         MetricBlock("Iron", "%.0f".format(fv.ironScore), if (fv.ironScore > 50) LabError else Color.White)
-                        MetricBlock("Target ID", if (fv.targetId > 0) "${fv.targetId}" else "--", LabTertiary)
+                        MetricBlock("Target ID", if (fv.isTargetIdCalibrated && fv.targetId > 0) "${fv.targetId}" else "--", LabTertiary)
                         MetricBlock("SNR", "%.1f".format(fv.snr), LabSecondary)
                         MetricBlock("Tau", if (fv.isTauValid) "%.1fµs".format(fv.estimatedTauUs) else "--", if (fv.isTauValid) LabSecondary else Color.Gray)
                         MetricBlock("Noise MAD", "%.2f".format(fv.noiseMad), Color.White)

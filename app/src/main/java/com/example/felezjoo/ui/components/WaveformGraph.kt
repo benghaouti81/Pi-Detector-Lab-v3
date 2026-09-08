@@ -248,21 +248,29 @@ fun WaveformGraph(
 
                 // Draw Region Bands (A, B, C & Integration Window)
                 if (showBands) {
-                    val aStartX = mapX(profile.aStartSample.coerceIn(0, sampleCount - 1))
-                    val aEndX = mapX(profile.aEndSample.coerceIn(0, sampleCount - 1))
+                    val graphConfig = com.example.felezjoo.models.SamplingConfiguration(
+                        sampleCount = sampleCount,
+                        sampleSpacingUs = if (sampleSpacingUs > 0.0) sampleSpacingUs else 1.6
+                    )
+                    val (aStart, aEnd) = profile.getRegionAIndices(graphConfig)
+                    val aStartX = mapX(aStart.coerceIn(0, sampleCount - 1))
+                    val aEndX = mapX((aEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(BandAColor, Offset(aStartX, paddingTop), Size(max(1f, aEndX - aStartX), graphHeight))
 
-                    val bStartX = mapX(profile.bStartSample.coerceIn(0, sampleCount - 1))
-                    val bEndX = mapX(profile.bEndSample.coerceIn(0, sampleCount - 1))
+                    val (bStart, bEnd) = profile.getRegionBIndices(graphConfig)
+                    val bStartX = mapX(bStart.coerceIn(0, sampleCount - 1))
+                    val bEndX = mapX((bEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(BandBColor, Offset(bStartX, paddingTop), Size(max(1f, bEndX - bStartX), graphHeight))
 
-                    val cStartX = mapX(profile.cStartSample.coerceIn(0, sampleCount - 1))
-                    val cEndX = mapX(profile.cEndSample.coerceIn(0, sampleCount - 1))
+                    val (cStart, cEnd) = profile.getRegionCIndices(graphConfig)
+                    val cStartX = mapX(cStart.coerceIn(0, sampleCount - 1))
+                    val cEndX = mapX((cEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(BandCColor, Offset(cStartX, paddingTop), Size(max(1f, cEndX - cStartX), graphHeight))
 
                     // Integration window top stripe
-                    val intStartX = mapX(profile.integrationStartSample.coerceIn(0, sampleCount - 1))
-                    val intEndX = mapX(profile.integrationEndSample.coerceIn(0, sampleCount - 1))
+                    val (intStart, intEnd) = profile.getIntegrationIndices(graphConfig)
+                    val intStartX = mapX(intStart.coerceIn(0, sampleCount - 1))
+                    val intEndX = mapX((intEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(IntegrationWindowColor, Offset(intStartX, paddingTop), Size(max(1f, intEndX - intStartX), graphHeight))
                     drawLine(Color(0xFF00E5FF), Offset(intStartX, paddingTop + 2f), Offset(intEndX, paddingTop + 2f), strokeWidth = 3f)
                 }

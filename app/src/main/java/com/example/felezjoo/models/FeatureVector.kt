@@ -32,6 +32,7 @@ enum class DatasetLabel(val displayName: String) {
 data class FeatureVector(
     val amplitude: Double = 0.0,
     val peak: Double = 0.0,
+    val peakNormalized: Double = 0.0,
     val peakSigned: Double = 0.0,
     val peakAbsolute: Double = 0.0,
     val peakIndex: Int = 0,
@@ -67,7 +68,8 @@ data class FeatureVector(
     val targetScore: Double = 0.0,
     val targetConfidence: Double = 0.0,
     val ironScore: Double = 0.0,
-    val targetId: Int = 0,
+    val targetId: Int = 0, // 0 = UNAVAILABLE / NOT CALIBRATED
+    val isTargetIdCalibrated: Boolean = false,
     val classification: TargetClassification = TargetClassification.NO_TARGET,
     val noiseMad: Double = 0.0,
     val areaNorm: Double = 0.0,
@@ -90,9 +92,9 @@ data class FeatureVector(
     val integralC: Double = 0.0,
     val isGroundFrozen: Boolean = false,
     val groundFreezeReason: String = "",
-    val dtUs: Double = 1.6,
+    val dtUs: Double = 0.0,
     val adcResolution: Int = 10,
-    val dspVersion: String = "DSP-2.1-PHYS"
+    val dspVersion: String = "DSP-3.0-PHYS"
 ) : Serializable
 
 data class TargetEvent(
