@@ -86,6 +86,7 @@ fun TargetIronScreen(viewModel: FelezJooViewModel) {
                 firstDerivative = dspResult?.firstDerivative ?: DoubleArray(0),
                 secondDerivative = dspResult?.secondDerivative ?: DoubleArray(0),
                 profile = activeProfile,
+                samplingConfiguration = currentBlock.samplingConfiguration,
                 sampleSpacingUs = currentBlock.sampleSpacingUs,
                 modifier = Modifier.fillMaxSize(),
                 showControls = false

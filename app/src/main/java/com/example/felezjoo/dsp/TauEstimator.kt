@@ -60,7 +60,8 @@ object TauEstimator {
         minR2: Double = 0.65,
         saturationThreshold: Double = Double.MAX_VALUE,
         minTauUs: Double = 1.0,
-        maxTauUs: Double = 300.0
+        maxTauUs: Double = 300.0,
+        noiseThresholdMultiplier: Double = 2.0
     ): TauFitResult {
         if (waveform.isEmpty() || sampleSpacingUs <= 0.0) {
             return TauFitResult.UNAVAILABLE
@@ -69,7 +70,7 @@ object TauEstimator {
         val sIdx = startIndex.coerceIn(0, waveform.size - 1)
         val eIdx = endIndex.coerceIn(sIdx + 1, waveform.size)
 
-        val threshold = (noiseFloor * 2.0).coerceAtLeast(1.0)
+        val threshold = (noiseFloor * noiseThresholdMultiplier).coerceAtLeast(1.0)
         val times = mutableListOf<Double>()
         val logVals = mutableListOf<Double>()
 

@@ -574,8 +574,8 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun runAutoDelayFinder() {
-        val raw = _currentBlock.value.rawSamples
-        val res = dspPipeline.findAutoDelay(raw)
+        val block = _currentBlock.value
+        val res = dspPipeline.findAutoDelay(block.rawSamples, block.samplingConfiguration)
         _autoDelayResult.value = res
     }
 

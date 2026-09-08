@@ -81,6 +81,7 @@ fun LiveWaveformScreen(viewModel: FelezJooViewModel) {
                 firstDerivative = dspResult?.firstDerivative ?: DoubleArray(0),
                 secondDerivative = dspResult?.secondDerivative ?: DoubleArray(0),
                 profile = activeProfile,
+                samplingConfiguration = currentBlock.samplingConfiguration,
                 sampleSpacingUs = currentBlock.sampleSpacingUs,
                 modifier = Modifier.fillMaxSize(),
                 showControls = true
@@ -101,7 +102,7 @@ fun LiveWaveformScreen(viewModel: FelezJooViewModel) {
             TechnicalStatBadge("A / B RATIO", "%.2f".format(fv?.aDivB ?: 0.0), "", LabTertiary)
             TechnicalStatBadge("B / C RATIO", "%.2f".format(fv?.bDivC ?: 0.0), "", LabTertiary)
             TechnicalStatBadge("CURVATURE", "%.2f".format(fv?.curvature ?: 0.0), "", Color(0xFFEA80FC))
-            TechnicalStatBadge("TARGET ID", "${fv?.targetId ?: 0}", "", LabSecondary)
+            TechnicalStatBadge("TARGET ID", if ((fv?.isTargetIdCalibrated == true) && (fv.targetId > 0)) "${fv.targetId}" else "--", "", LabSecondary)
         }
     }
 }

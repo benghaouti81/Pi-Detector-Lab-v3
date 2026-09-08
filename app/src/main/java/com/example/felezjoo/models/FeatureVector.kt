@@ -40,7 +40,8 @@ data class FeatureVector(
     val minimum: Double = 0.0,
     val maximum: Double = 0.0,
     val range: Double = 0.0,
-    val mean: Double = 0.0,
+    val mean: Double = 0.0,            // Signed mean: sum(r) / count
+    val meanAbsolute: Double = 0.0,    // Absolute mean: sum(|r|) / count
     val rms: Double = 0.0,
     val noise: Double = 0.0,
     val snr: Double = 0.0,

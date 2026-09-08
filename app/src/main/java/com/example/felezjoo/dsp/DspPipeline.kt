@@ -1,6 +1,7 @@
 package com.example.felezjoo.dsp
 
 import com.example.felezjoo.models.DecayBlock
+import com.example.felezjoo.models.DetectionCalibration
 import com.example.felezjoo.models.DspProfile
 import com.example.felezjoo.models.FeatureVector
 import com.example.felezjoo.models.IntegrationMode
@@ -160,7 +161,9 @@ class DspPipeline {
         }
 
         // 8. Robust Noise Floor Estimation (True MAD and Difference Noise on late tail)
-        val tailStart = (count * 0.70).toInt().coerceIn(0, count - 2)
+        // Uses calibration.tailNoiseFraction with safe clamping for small sample counts
+        val tailFraction = profile.calibration.tailNoiseFraction
+        val tailStart = ((count * tailFraction).toInt()).coerceIn(0, (count - 2).coerceAtLeast(0))
         val noiseEstimate = NoiseEstimator.estimateNoise(normalizedResidual, tailStart, count)
         val noiseFloor = noiseEstimate.noiseFloor
         val noiseRms = noiseEstimate.noiseRms
@@ -173,13 +176,15 @@ class DspPipeline {
         var maxResidual = -Double.MAX_VALUE
         var minResidual = Double.MAX_VALUE
         var residualSum = 0.0
+        var residualAbsSum = 0.0
         var residualSqSum = 0.0
 
         for (i in 0 until count) {
             val r = normalizedResidual[i]
             if (r > maxResidual) maxResidual = r
             if (r < minResidual) minResidual = r
-            residualSum += abs(r)
+            residualSum += r
+            residualAbsSum += abs(r)
             residualSqSum += r * r
 
             if (i in validStart until validEnd) {
@@ -191,7 +196,7 @@ class DspPipeline {
             }
         }
         val residualRms = sqrt(residualSqSum / count.coerceAtLeast(1))
-        val peakTimeUs = peakIndex * dt
+        val peakTimeUs = if (dt > 0.0) peakIndex * dt else Double.NaN
         val peakSigned = rawResidual[peakIndex]
         val peakAbsolute = abs(rawResidual[peakIndex])
         val peakSignal = peakNormalized
@@ -250,13 +255,18 @@ class DspPipeline {
 
         // 12. Scientific Tau Estimation via Multi-Point Log-Linear Regression
         // Uses normalizedResidual (the unskewed measurement path), NOT detectionCurve (which has non-linear median filter distortion)
+        val cal = profile.calibration
         val tauResult = TauEstimator.estimateTau(
             waveform = normalizedResidual,
             sampleSpacingUs = dt,
             startIndex = validStart,
             endIndex = validEnd,
             noiseFloor = noiseFloor,
-            saturationThreshold = (config.adcFullScale - 5.0)
+            noiseThresholdMultiplier = cal.noiseThresholdMultiplier,
+            minR2 = cal.minTauR2,
+            saturationThreshold = (config.adcFullScale - 5.0),
+            minTauUs = cal.minTauUs,
+            maxTauUs = cal.maxTauUs
         )
 
         // 13. Persistence & Stability Tracking
@@ -277,14 +287,14 @@ class DspPipeline {
         val stability = calculateStability(activeHistory)
 
         // 14. Target Score Normalization (0-100)
-        // Scaled to ADC resolution full scale and physical integration duration
+        // Scaled using DetectionCalibration heuristic references
         val adcFullScale = config.adcFullScale
-        val signalRef = (adcFullScale * 0.15).coerceIn(50.0, 1000.0)
+        val signalRef = (adcFullScale * cal.signalFractionRef).coerceIn(50.0, 1000.0)
         val signalTerm = (peakSignal / signalRef).coerceIn(0.0, 1.0) * 100.0
-        val snrTerm = (snr / 20.0).coerceIn(0.0, 1.0) * 100.0
+        val snrTerm = (snr / cal.snrReference).coerceIn(0.0, 1.0) * 100.0
         val areaRef = signalRef * (validEnd - validStart) * dt * 0.5
         val areaTerm = (integrationArea / areaRef.coerceAtLeast(100.0)).coerceIn(0.0, 1.0) * 100.0
-        val shapeTerm = (aDivB / 4.0).coerceIn(0.0, 1.0) * 100.0
+        val shapeTerm = (aDivB / cal.shapeRatioReference).coerceIn(0.0, 1.0) * 100.0
         val persistenceTerm = persistence
 
         val rawScore = (profile.weightSignal * signalTerm +
@@ -295,7 +305,7 @@ class DspPipeline {
         val targetScore = rawScore.coerceIn(0.0, 100.0)
 
         // 15. Target Confidence (0-100%)
-        val confidence = calculateConfidence(snr, persistence, stability, noiseFloor, targetScore)
+        val confidence = calculateConfidence(snr, persistence, stability, noiseFloor, targetScore, cal)
 
         // 16. Ferrous / Non-Ferrous Metric (0-100)
         // High early/late ratio, steep negative slope, rapid early dissipation => Ferrous
@@ -358,6 +368,7 @@ class DspPipeline {
             maximum = maxResidual,
             range = maxResidual - minResidual,
             mean = residualSum / count.coerceAtLeast(1),
+            meanAbsolute = residualAbsSum / count.coerceAtLeast(1),
             rms = residualRms,
             noise = noiseRms,
             snr = snr,
@@ -495,12 +506,13 @@ class DspPipeline {
         persistence: Double,
         stability: Double,
         noiseFloor: Double,
-        targetScore: Double
+        targetScore: Double,
+        calibration: DetectionCalibration
     ): Double {
-        val snrFactor = (snr / 12.0).coerceIn(0.0, 1.0)
+        val snrFactor = (snr / calibration.confidenceSnrScale).coerceIn(0.0, 1.0)
         val persistenceFactor = (persistence / 100.0).coerceIn(0.0, 1.0)
         val stabilityFactor = (stability / 100.0).coerceIn(0.0, 1.0)
-        val noiseHealth = (1.0 / (1.0 + (noiseFloor / 8.0))).coerceIn(0.0, 1.0)
+        val noiseHealth = (1.0 / (1.0 + (noiseFloor / calibration.noiseHealthScale))).coerceIn(0.0, 1.0)
 
         val conf = (0.35 * snrFactor + 0.30 * persistenceFactor + 0.20 * stabilityFactor + 0.15 * noiseHealth) * 100.0
         return conf.coerceIn(0.0, 100.0)
@@ -563,7 +575,7 @@ class DspPipeline {
     ): Triple<Int, Double, Double> {
         val count = raw.size
         val dt = if (config.sampleSpacingUs > 0.0) config.sampleSpacingUs else config.delayUnitUs
-        if (count < 10) return Triple(8, 8 * dt, 50.0)
+        if (count < 10) return Triple(8, if (dt > 0.0) 8 * dt else Double.NaN, 50.0)
 
         var bestIndex = 8
         var bestConfidence = 75.0
@@ -577,7 +589,7 @@ class DspPipeline {
                 break
             }
         }
-        val delayUs = bestIndex * dt
+        val delayUs = if (dt > 0.0) bestIndex * dt else Double.NaN
         return Triple(bestIndex, delayUs, bestConfidence)
     }
 }

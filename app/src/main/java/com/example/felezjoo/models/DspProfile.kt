@@ -103,6 +103,8 @@ data class DspProfile(
     val confidenceThreshold: Double = 45.0,
     val audioThreshold: Double = 25.0,
     val ironRejectThreshold: Double = 60.0,
+    // Algorithmic and heuristic calibration reference
+    val calibration: DetectionCalibration = DetectionCalibration(),
     val dspVersion: String = "DSP-3.0-PHYS"
 ) : Serializable {
 
@@ -118,9 +120,18 @@ data class DspProfile(
     fun getRegionCIndices(config: SamplingConfiguration): Pair<Int, Int> =
         config.physicalRangeToIndices(regionCStartUs, regionCEndUs)
 
-    // Derived sample-index helpers (evaluated using device sampling spacing if available)
-    fun integrationStartSample(spacingUs: Double): Int = if (spacingUs > 0.0) (integrationStartUs / spacingUs).toInt() else 8
-    fun integrationEndSample(spacingUs: Double): Int = if (spacingUs > 0.0) (integrationEndUs / spacingUs).toInt() else 30
+    // Derived sample-index helpers (evaluated from physical time and active sampling configuration)
+    fun integrationStartSample(config: SamplingConfiguration): Int =
+        getIntegrationIndices(config).first
+
+    fun integrationEndSample(config: SamplingConfiguration): Int =
+        getIntegrationIndices(config).second
+
+    fun integrationStartSample(spacingUs: Double): Int =
+        if (spacingUs > 0.0) (integrationStartUs / spacingUs).toInt() else 0
+
+    fun integrationEndSample(spacingUs: Double): Int =
+        if (spacingUs > 0.0) (integrationEndUs / spacingUs).toInt() else 0
 
     // Backward-compatibility properties (derived from physical time and groundConfig)
     val groundAlpha: Double get() = groundConfig.alpha

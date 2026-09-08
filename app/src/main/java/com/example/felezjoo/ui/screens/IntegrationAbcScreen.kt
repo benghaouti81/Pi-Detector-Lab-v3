@@ -57,6 +57,13 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        val sc = currentBlock.samplingConfiguration
+        val maxUs = (sc.sampleCount * sc.sampleSpacingUs).toFloat().coerceAtLeast(50f)
+        val (intStartIdx, intEndIdx) = activeProfile.getIntegrationIndices(sc)
+        val (aStartIdx, aEndIdx) = activeProfile.getRegionAIndices(sc)
+        val (bStartIdx, bEndIdx) = activeProfile.getRegionBIndices(sc)
+        val (cStartIdx, cEndIdx) = activeProfile.getRegionCIndices(sc)
+
         // Waveform preview with bands enabled
         Surface(
             color = LabSurface,
@@ -75,6 +82,7 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
                 firstDerivative = dspResult?.firstDerivative ?: DoubleArray(0),
                 secondDerivative = dspResult?.secondDerivative ?: DoubleArray(0),
                 profile = activeProfile,
+                samplingConfiguration = sc,
                 sampleSpacingUs = currentBlock.sampleSpacingUs,
                 modifier = Modifier.fillMaxSize(),
                 showControls = false
@@ -82,13 +90,6 @@ fun IntegrationAbcScreen(viewModel: FelezJooViewModel) {
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-
-        val sc = currentBlock.samplingConfiguration
-        val maxUs = (sc.sampleCount * sc.sampleSpacingUs).toFloat().coerceAtLeast(50f)
-        val (intStartIdx, intEndIdx) = activeProfile.getIntegrationIndices(sc)
-        val (aStartIdx, aEndIdx) = activeProfile.getRegionAIndices(sc)
-        val (bStartIdx, bEndIdx) = activeProfile.getRegionBIndices(sc)
-        val (cStartIdx, cEndIdx) = activeProfile.getRegionCIndices(sc)
 
         // Boundary Sliders
         Surface(

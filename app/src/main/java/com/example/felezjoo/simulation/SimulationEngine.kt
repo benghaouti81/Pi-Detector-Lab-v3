@@ -51,6 +51,7 @@ class SimulationEngine(
     var isSweeping: Boolean = true
     var polarity: WaveformPolarity = WaveformPolarity.POSITIVE
     var transportOrder: EtsTransportOrder = EtsTransportOrder.CHRONOLOGICAL
+    var activeSamplingConfig: SamplingConfiguration = SamplingConfiguration()
 
     private var simJob: Job? = null
     private var sequenceNumber = 0L
@@ -61,11 +62,9 @@ class SimulationEngine(
         if (isRunning) return
         isRunning = true
         simJob = scope.launch(Dispatchers.Default) {
-            val sampleCount = 70
-            val config = SamplingConfiguration(
-                sampleCount = sampleCount,
-                sampleSpacingUs = 1.6,
-                polarity = polarity
+            val config = activeSamplingConfig.copy(
+                polarity = polarity,
+                transportOrder = transportOrder
             )
 
             while (isActive && isRunning) {
@@ -112,11 +111,9 @@ class SimulationEngine(
     }
 
     fun generateSingleBlock(seq: Long = 1L): Pair<DecayBlock, ByteArray> {
-        val sampleCount = 70
-        val config = SamplingConfiguration(
-            sampleCount = sampleCount,
-            sampleSpacingUs = 1.6,
-            polarity = polarity
+        val config = activeSamplingConfig.copy(
+            polarity = polarity,
+            transportOrder = transportOrder
         )
         val tauUs = targetTauUsOverride ?: targetType.physicalTauUs
 

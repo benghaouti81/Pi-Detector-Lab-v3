@@ -307,4 +307,101 @@ class FelezJooDspAndProtocolTest {
         // Normalized residual should have positive deflection despite negative raw deflection
         assertTrue("Normalized residual peak must be positive (actual: ${result.featureVector.amplitude})", result.featureVector.amplitude > 0.0)
     }
+
+    @Test
+    fun testFeatureVectorMeanAndMeanAbsolute() {
+        val pipeline = DspPipeline()
+        val config = SamplingConfiguration(sampleCount = 70, sampleSpacingUs = 1.6)
+
+        // Block with zero signal
+        val (block, _) = SimulationEngine.generatePhysicsBlock(
+            seq = 1L,
+            currentAmp = 50.0,
+            tauUs = 25.0,
+            isFerrous = false,
+            groundAmp = 0.0,
+            noiseStdDev = 0.0,
+            polarity = WaveformPolarity.POSITIVE,
+            config = config
+        )
+        val result = pipeline.processBlock(block, DspProfile.STABLE, updateState = false)
+        val fv = result.featureVector
+
+        // mean is signed, meanAbsolute is absolute: meanAbsolute must be >= 0.0
+        assertTrue("meanAbsolute must be non-negative", fv.meanAbsolute >= 0.0)
+        assertTrue("meanAbsolute >= abs(mean)", fv.meanAbsolute >= kotlin.math.abs(fv.mean) - 1e-6)
+    }
+
+    @Test
+    fun testTauEstimatorScientificDecay() {
+        // Ideal exponential decay: V(t) = 100 * exp(-t / 30.0)
+        val dt = 1.6
+        val trueTau = 30.0
+        val sampleCount = 50
+        val waveform = DoubleArray(sampleCount) { i ->
+            val t = i * dt
+            100.0 * kotlin.math.exp(-t / trueTau)
+        }
+
+        val result = com.example.felezjoo.dsp.TauEstimator.estimateTau(
+            waveform = waveform,
+            sampleSpacingUs = dt,
+            startIndex = 5,
+            endIndex = 35,
+            noiseFloor = 1.0,
+            minSamples = 4,
+            minR2 = 0.95,
+            minTauUs = 1.0,
+            maxTauUs = 300.0
+        )
+
+        assertTrue("Tau fit must be available for clean exponential", result.isAvailable)
+        assertEquals("Fitted tau must match true tau within 1%", trueTau, result.tauUs, 0.3)
+        assertTrue("R^2 must exceed 0.99 for pure noiseless decay", result.rSquared > 0.99)
+
+        // Invalid: dt <= 0
+        val invalidDt = com.example.felezjoo.dsp.TauEstimator.estimateTau(
+            waveform = waveform,
+            sampleSpacingUs = 0.0,
+            startIndex = 5,
+            endIndex = 35,
+            noiseFloor = 1.0
+        )
+        assertFalse("Tau must be unavailable when sampleSpacingUs is 0", invalidDt.isAvailable)
+        assertTrue("Tau must be NaN when sampleSpacingUs is 0", invalidDt.tauUs.isNaN())
+    }
+
+    @Test
+    fun testDetectionCalibrationIntegration() {
+        val config = SamplingConfiguration(sampleCount = 70, sampleSpacingUs = 1.6)
+        val (block, _) = SimulationEngine.generatePhysicsBlock(
+            seq = 1L,
+            currentAmp = 40.0,
+            tauUs = 25.0,
+            isFerrous = false,
+            groundAmp = 10.0,
+            noiseStdDev = 3.0,
+            polarity = WaveformPolarity.POSITIVE,
+            config = config
+        )
+
+        val pipeline = DspPipeline()
+        // Profile with default calibration
+        val pDefault = DspProfile.STABLE
+        val rDefault = pipeline.processBlock(block, pDefault, updateState = false)
+
+        // Profile with custom calibration (higher SNR and Signal requirement)
+        val customCal = com.example.felezjoo.models.DetectionCalibration(
+            snrReference = 60.0,
+            signalFractionRef = 0.50
+        )
+        val pCustom = pDefault.copy(calibration = customCal)
+        val rCustom = pipeline.processBlock(block, pCustom, updateState = false)
+
+        // Higher reference requirements yield lower targetScore
+        assertTrue(
+            "Custom calibration must dynamically affect score without hardcoded constants (default=${rDefault.featureVector.targetScore}, custom=${rCustom.featureVector.targetScore})",
+            rCustom.featureVector.targetScore < rDefault.featureVector.targetScore
+        )
+    }
 }

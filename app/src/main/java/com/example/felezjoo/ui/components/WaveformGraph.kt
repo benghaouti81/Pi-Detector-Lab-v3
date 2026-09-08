@@ -85,7 +85,8 @@ fun WaveformGraph(
     firstDerivative: DoubleArray,
     secondDerivative: DoubleArray,
     profile: DspProfile,
-    sampleSpacingUs: Double = 1.6,
+    samplingConfiguration: com.example.felezjoo.models.SamplingConfiguration? = null,
+    sampleSpacingUs: Double? = null,
     modifier: Modifier = Modifier,
     showControls: Boolean = true,
     normalizedResidualCurve: DoubleArray = residualCurve
@@ -105,6 +106,17 @@ fun WaveformGraph(
 
     val sampleCount = rawSamples.size.coerceAtLeast(1)
     val textMeasurer = rememberTextMeasurer()
+
+    val effectiveConfig = samplingConfiguration
+        ?: com.example.felezjoo.models.SamplingConfiguration(
+            sampleCount = sampleCount,
+            sampleSpacingUs = sampleSpacingUs ?: 0.0
+        )
+    val effectiveSpacingUs = if (sampleSpacingUs != null && sampleSpacingUs > 0.0) {
+        sampleSpacingUs
+    } else {
+        effectiveConfig.sampleSpacingUs
+    }
 
     Column(modifier = modifier) {
         if (showControls) {
@@ -236,11 +248,11 @@ fun WaveformGraph(
                 for (step in 0..xSteps) {
                     val sIdx = (step * (sampleCount - 1) / xSteps)
                     val xPos = mapX(sIdx)
-                    val timeUs = sIdx * sampleSpacingUs
+                    val label = if (effectiveSpacingUs > 0.0) "%.0fµs".format(sIdx * effectiveSpacingUs) else "S$sIdx"
                     drawLine(gridColor, Offset(xPos, paddingTop), Offset(xPos, size.height - paddingBottom), strokeWidth = 1f)
                     drawText(
                         textMeasurer = textMeasurer,
-                        text = "%.0fµs".format(timeUs),
+                        text = label,
                         topLeft = Offset(xPos - 12f, size.height - paddingBottom + 4f),
                         style = TextStyle(color = LabBorder, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                     )
@@ -248,27 +260,23 @@ fun WaveformGraph(
 
                 // Draw Region Bands (A, B, C & Integration Window)
                 if (showBands) {
-                    val graphConfig = com.example.felezjoo.models.SamplingConfiguration(
-                        sampleCount = sampleCount,
-                        sampleSpacingUs = if (sampleSpacingUs > 0.0) sampleSpacingUs else 1.6
-                    )
-                    val (aStart, aEnd) = profile.getRegionAIndices(graphConfig)
+                    val (aStart, aEnd) = profile.getRegionAIndices(effectiveConfig)
                     val aStartX = mapX(aStart.coerceIn(0, sampleCount - 1))
                     val aEndX = mapX((aEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(BandAColor, Offset(aStartX, paddingTop), Size(max(1f, aEndX - aStartX), graphHeight))
 
-                    val (bStart, bEnd) = profile.getRegionBIndices(graphConfig)
+                    val (bStart, bEnd) = profile.getRegionBIndices(effectiveConfig)
                     val bStartX = mapX(bStart.coerceIn(0, sampleCount - 1))
                     val bEndX = mapX((bEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(BandBColor, Offset(bStartX, paddingTop), Size(max(1f, bEndX - bStartX), graphHeight))
 
-                    val (cStart, cEnd) = profile.getRegionCIndices(graphConfig)
+                    val (cStart, cEnd) = profile.getRegionCIndices(effectiveConfig)
                     val cStartX = mapX(cStart.coerceIn(0, sampleCount - 1))
                     val cEndX = mapX((cEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(BandCColor, Offset(cStartX, paddingTop), Size(max(1f, cEndX - cStartX), graphHeight))
 
                     // Integration window top stripe
-                    val (intStart, intEnd) = profile.getIntegrationIndices(graphConfig)
+                    val (intStart, intEnd) = profile.getIntegrationIndices(effectiveConfig)
                     val intStartX = mapX(intStart.coerceIn(0, sampleCount - 1))
                     val intEndX = mapX((intEnd - 1).coerceIn(0, sampleCount - 1))
                     drawRect(IntegrationWindowColor, Offset(intStartX, paddingTop), Size(max(1f, intEndX - intStartX), graphHeight))
@@ -321,7 +329,7 @@ fun WaveformGraph(
             // Cursor Tooltip Overlay
             if (selectedCursorIndex in 0 until sampleCount) {
                 val idx = selectedCursorIndex
-                val timeUs = idx * sampleSpacingUs
+                val timeStr = if (effectiveSpacingUs > 0.0) "  (%.1f µs)".format(idx * effectiveSpacingUs) else ""
                 val rawVal = rawSamples.getOrNull(idx) ?: 0
                 val fltVal = filteredCurve.getOrNull(idx) ?: 0.0
                 val resVal = residualCurve.getOrNull(idx) ?: 0.0
@@ -337,7 +345,7 @@ fun WaveformGraph(
                 ) {
                     Column(modifier = Modifier.padding(8.dp)) {
                         Text(
-                            text = "Cursor: Sample #$idx  (%.1f µs)".format(timeUs),
+                            text = "Cursor: Sample #$idx$timeStr",
                             style = MaterialTheme.typography.labelMedium.copy(color = Color.White, fontWeight = FontWeight.Bold)
                         )
                         Spacer(modifier = Modifier.height(2.dp))
