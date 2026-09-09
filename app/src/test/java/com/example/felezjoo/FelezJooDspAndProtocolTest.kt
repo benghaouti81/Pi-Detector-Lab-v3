@@ -4,11 +4,14 @@ import com.example.felezjoo.dsp.DspPipeline
 import com.example.felezjoo.dsp.EtsReconstruction
 import com.example.felezjoo.dsp.EtsTransportOrder
 import com.example.felezjoo.dsp.NoiseEstimator
+import com.example.felezjoo.dsp.PolarityDetector
 import com.example.felezjoo.dsp.SafeGroundTracker
 import com.example.felezjoo.dsp.TauEstimator
 import com.example.felezjoo.models.DecayBlock
 import com.example.felezjoo.models.DspProfile
 import com.example.felezjoo.models.GroundSpeed
+import com.example.felezjoo.models.PolarityDetectionQuality
+import com.example.felezjoo.models.PolarityMode
 import com.example.felezjoo.models.SamplingConfiguration
 import com.example.felezjoo.models.TargetClassification
 import com.example.felezjoo.models.WaveformPolarity
@@ -1095,5 +1098,144 @@ class FelezJooDspAndProtocolTest {
         val bAfter = pipeline.baselineCurve
         assertTrue("updateState=false must cause zero ground mutation", gBefore.contentEquals(gAfter))
         assertTrue("updateState=false must cause zero baseline mutation", bBefore.contentEquals(bAfter))
+    }
+
+    @Test
+    fun testDspPipelinePolarityInvariance() {
+        // Principle: The exact same physical metal target decay time constant (Tau = 20.0 us)
+        // must yield the exact same estimated Tau, whether captured through:
+        // - A normal non-inverting AFE (positive deflection, polarity = POSITIVE)
+        // - An inverting AFE (negative deflection, polarity = NEGATIVE)
+        val dt = 1.6
+        val sampleCount = 70
+        val trueTauUs = 20.0
+        val targetAmp = 150.0
+        val groundBaseline = 200.0 // ADC bias/baseline
+
+        val posSamples = IntArray(sampleCount) { i ->
+            val decay = targetAmp * exp(-(i * dt) / trueTauUs)
+            kotlin.math.round(groundBaseline + decay).toInt()
+        }
+
+        val negSamples = IntArray(sampleCount) { i ->
+            val decay = targetAmp * exp(-(i * dt) / trueTauUs)
+            kotlin.math.round(groundBaseline - decay).toInt() // Inverting AFE deflects downward below baseline
+        }
+
+        val configPos = SamplingConfiguration(
+            sampleCount = sampleCount,
+            sampleSpacingUs = dt,
+            polarity = WaveformPolarity.POSITIVE,
+            polarityMode = PolarityMode.POSITIVE
+        )
+        val configNeg = SamplingConfiguration(
+            sampleCount = sampleCount,
+            sampleSpacingUs = dt,
+            polarity = WaveformPolarity.NEGATIVE,
+            polarityMode = PolarityMode.NEGATIVE
+        )
+
+        val blockPos = DecayBlock(
+            sequenceNumber = 1L,
+            rawSamples = posSamples,
+            samplingConfiguration = configPos
+        )
+        val blockNeg = DecayBlock(
+            sequenceNumber = 2L,
+            rawSamples = negSamples,
+            samplingConfiguration = configNeg
+        )
+
+        val profile = DspProfile.STABLE
+        val pipelinePos = DspPipeline()
+        val pipelineNeg = DspPipeline()
+
+        // Capture initial ground/baseline at 200.0 for both pipelines
+        val initialGround = DoubleArray(sampleCount) { groundBaseline }
+        pipelinePos.setGroundDirect(initialGround)
+        pipelineNeg.setGroundDirect(initialGround)
+
+        val resPos = pipelinePos.processBlock(blockPos, profile, updateState = false)
+        val resNeg = pipelineNeg.processBlock(blockNeg, profile, updateState = false)
+
+        assertTrue("Positive polarity Tau fit must be valid", resPos.featureVector.isTauValid)
+        assertTrue("Negative polarity Tau fit must be valid", resNeg.featureVector.isTauValid)
+
+        // Physical decay Tau estimation must match true value within discrete sampling/quantization tolerance
+        assertEquals(trueTauUs, resPos.featureVector.estimatedTauUs, 1.0)
+        assertEquals(trueTauUs, resNeg.featureVector.estimatedTauUs, 1.0)
+
+        // Exact equivalence between positive and inverted AFEs
+        assertEquals(
+            "DSP Pipeline must give identical Tau regardless of AFE polarity",
+            resPos.featureVector.estimatedTauUs,
+            resNeg.featureVector.estimatedTauUs,
+            0.05
+        )
+        assertEquals(
+            "DSP Pipeline must give identical Tau R² regardless of AFE polarity",
+            resPos.featureVector.tauFitR2,
+            resNeg.featureVector.tauFitR2,
+            0.01
+        )
+
+        // Target ID must remain 0 (uncalibrated) in both cases
+        assertEquals(0, resPos.featureVector.targetId)
+        assertEquals(0, resNeg.featureVector.targetId)
+        assertFalse(resPos.featureVector.isTargetIdCalibrated)
+        assertFalse(resNeg.featureVector.isTargetIdCalibrated)
+    }
+
+    @Test
+    fun testAutomaticPolarityDetection() {
+        val dt = 1.6
+        val sampleCount = 70
+        val tauUs = 20.0
+        val amp = 120.0
+
+        // Case 1: Pure positive residual decay (Standard non-inverting AFE)
+        val posResidual = DoubleArray(sampleCount) { i ->
+            amp * exp(-(i * dt) / tauUs)
+        }
+        val posResult = PolarityDetector.detectPolarity(
+            rawResidual = posResidual,
+            dt = dt,
+            startIndex = 6,
+            endIndex = 28,
+            noiseFloor = 2.0
+        )
+        assertEquals("Must detect POSITIVE polarity", WaveformPolarity.POSITIVE, posResult.detectedPolarity)
+        assertTrue("Quality must be reliable (HIGH or MEDIUM)", posResult.isReliable)
+        assertTrue("Positive R² must be high (> 0.90)", posResult.positiveR2 > 0.90)
+
+        // Case 2: Pure negative residual decay (Inverting AFE)
+        val negResidual = DoubleArray(sampleCount) { i ->
+            -amp * exp(-(i * dt) / tauUs)
+        }
+        val negResult = PolarityDetector.detectPolarity(
+            rawResidual = negResidual,
+            dt = dt,
+            startIndex = 6,
+            endIndex = 28,
+            noiseFloor = 2.0
+        )
+        assertEquals("Must detect NEGATIVE polarity", WaveformPolarity.NEGATIVE, negResult.detectedPolarity)
+        assertTrue("Quality must be reliable (HIGH or MEDIUM)", negResult.isReliable)
+        assertTrue("Negative R² must be high (> 0.90)", negResult.negativeR2 > 0.90)
+
+        // Case 3: Noise floor only (No physical target decay) -> UNKNOWN
+        val noiseResidual = DoubleArray(sampleCount) { i ->
+            if (i % 2 == 0) 0.8 else -0.8
+        }
+        val noiseResult = PolarityDetector.detectPolarity(
+            rawResidual = noiseResidual,
+            dt = dt,
+            startIndex = 6,
+            endIndex = 28,
+            noiseFloor = 2.0
+        )
+        assertEquals("Noise only must return null detected polarity (UNKNOWN)", null, noiseResult.detectedPolarity)
+        assertEquals("Quality must be NONE for pure noise", PolarityDetectionQuality.NONE, noiseResult.quality)
+        assertFalse("Noise detection must not be reliable", noiseResult.isReliable)
     }
 }

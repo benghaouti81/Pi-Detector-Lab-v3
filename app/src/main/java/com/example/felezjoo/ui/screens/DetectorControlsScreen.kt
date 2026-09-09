@@ -21,6 +21,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -38,6 +39,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.felezjoo.audio.AudioMode
+import com.example.felezjoo.models.PolarityDetectionQuality
+import com.example.felezjoo.models.PolarityMode
+import com.example.felezjoo.models.WaveformPolarity
 import com.example.felezjoo.viewmodel.FelezJooViewModel
 import com.example.ui.theme.LabBorder
 import com.example.ui.theme.LabError
@@ -52,6 +56,9 @@ import com.example.ui.theme.LabTextSecondary
 fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
     val currentBlock by viewModel.currentBlock.collectAsState()
     val activeProfile by viewModel.activeProfile.collectAsState()
+    val samplingConfig by viewModel.samplingConfig.collectAsState()
+    val polarityDetectionResult by viewModel.polarityDetectionResult.collectAsState()
+    val dspResult by viewModel.dspResult.collectAsState()
     val audioManager = viewModel.audioManager
 
     var pulseRateHz by remember { mutableIntStateOf(currentBlock.pulseRate) }
@@ -126,6 +133,152 @@ fun DetectorControlsScreen(viewModel: FelezJooViewModel) {
                     modifier = Modifier.fillMaxWidth().testTag("apply_detector_hardware_btn")
                 ) {
                     Text("TRANSMIT HARDWARE CONFIGURATION", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Waveform Polarity (AFE Inverting/Non-inverting and Auto Detection)
+        Surface(
+            color = LabSurface,
+            shape = RoundedCornerShape(10.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, LabBorder),
+            modifier = Modifier.fillMaxWidth().testTag("waveform_polarity_card")
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("WAVEFORM POLARITY & AFE COUPLING", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LabPrimary)
+                    val activeSign = dspResult?.effectivePolarity?.sign ?: samplingConfig.polarity.sign
+                    Text(
+                        text = if (activeSign > 0) "ACTIVE: NORMAL (+)" else "ACTIVE: INVERTED (-)",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (activeSign > 0) LabSecondary else LabTertiary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Controls AFE decay normalization so eddy current decays are positive for regression.",
+                    fontSize = 11.sp,
+                    color = LabTextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text("Polarity Mode Selection:", fontSize = 11.sp, color = LabTextSecondary)
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    PolarityMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = samplingConfig.polarityMode == mode,
+                            onClick = { viewModel.setPolarityMode(mode) },
+                            label = { Text(mode.displayName, fontSize = 11.sp) },
+                            modifier = Modifier.weight(1f).height(34.dp).testTag("polarity_mode_${mode.name.lowercase()}")
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Auto-detection status display
+                Surface(
+                    color = LabSurfaceVariant,
+                    shape = RoundedCornerShape(6.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LabBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            val detectedPol = polarityDetectionResult.detectedPolarity
+                            val detectedStr = when (detectedPol) {
+                                WaveformPolarity.POSITIVE -> "NORMAL (+)"
+                                WaveformPolarity.NEGATIVE -> "INVERTED (-)"
+                                null -> "UNKNOWN / NOISE"
+                            }
+                            Text(
+                                text = "Detected: $detectedStr",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = when (detectedPol) {
+                                    WaveformPolarity.POSITIVE -> LabSecondary
+                                    WaveformPolarity.NEGATIVE -> LabTertiary
+                                    null -> LabTextSecondary
+                                }
+                            )
+
+                            val qualityColor = when (polarityDetectionResult.quality) {
+                                PolarityDetectionQuality.HIGH -> LabSecondary
+                                PolarityDetectionQuality.MEDIUM -> LabPrimary
+                                PolarityDetectionQuality.LOW -> LabTertiary
+                                PolarityDetectionQuality.NONE -> LabTextSecondary
+                            }
+                            Text(
+                                text = "Quality: ${polarityDetectionResult.quality.displayName}",
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = qualityColor,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = polarityDetectionResult.reason,
+                            fontSize = 10.sp,
+                            color = LabTextSecondary
+                        )
+
+                        if (polarityDetectionResult.detectedPolarity != null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "+Fit: R²=%.2f (pts=%d) | -Fit: R²=%.2f (pts=%d)".format(
+                                    polarityDetectionResult.positiveR2,
+                                    polarityDetectionResult.positiveValidSamples,
+                                    polarityDetectionResult.negativeR2,
+                                    polarityDetectionResult.negativeValidSamples
+                                ),
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = LabTextSecondary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { viewModel.runPolarityDetection() },
+                        modifier = Modifier.weight(1f).testTag("detect_polarity_btn")
+                    ) {
+                        Text("DETECT POLARITY", fontSize = 11.sp)
+                    }
+
+                    Button(
+                        onClick = { viewModel.applyDetectedPolarity() },
+                        enabled = polarityDetectionResult.detectedPolarity != null,
+                        colors = ButtonDefaults.buttonColors(containerColor = LabSecondary, contentColor = Color.Black),
+                        modifier = Modifier.weight(1f).testTag("apply_polarity_btn")
+                    ) {
+                        Text("ADOPT DETECTED", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }

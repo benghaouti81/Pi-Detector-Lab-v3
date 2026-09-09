@@ -21,9 +21,13 @@ import com.example.felezjoo.models.DecayBlock
 import com.example.felezjoo.models.DetectorCapabilities
 import com.example.felezjoo.models.DeviceInfo
 import com.example.felezjoo.models.DspProfile
+import com.example.felezjoo.models.PolarityDetectionQuality
+import com.example.felezjoo.models.PolarityDetectionResult
+import com.example.felezjoo.models.PolarityMode
 import com.example.felezjoo.models.SamplingConfiguration
 import com.example.felezjoo.models.TargetClassification
 import com.example.felezjoo.models.TargetEvent
+import com.example.felezjoo.models.WaveformPolarity
 import com.example.felezjoo.protocol.ProtocolParser
 import com.example.felezjoo.serial.CommandConsoleManager
 import com.example.felezjoo.serial.SerialDirection
@@ -134,6 +138,10 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
 
     private val _autoDelayResult = MutableStateFlow<Triple<Int, Double, Double>?>(null)
     val autoDelayResult: StateFlow<Triple<Int, Double, Double>?> = _autoDelayResult.asStateFlow()
+
+    // Waveform Polarity Detection and Configuration State
+    private val _polarityDetectionResult = MutableStateFlow<PolarityDetectionResult>(PolarityDetectionResult.UNKNOWN)
+    val polarityDetectionResult: StateFlow<PolarityDetectionResult> = _polarityDetectionResult.asStateFlow()
 
     private val _groundCaptureProgress = MutableStateFlow(0)
     val groundCaptureProgress: StateFlow<Int> = _groundCaptureProgress.asStateFlow()
@@ -401,14 +409,32 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     private fun onBlockReceived(block: DecayBlock) {
         viewModelScope.launch(Dispatchers.Default) {
             val startMs = System.currentTimeMillis()
-            _currentBlock.value = block
+            // Ensure block inherits user's active sampling configuration (including polarity & polarityMode)
+            val activeCfg = _samplingConfig.value
+            val effectiveBlock = if (block.samplingConfiguration.polarity != activeCfg.polarity ||
+                block.samplingConfiguration.polarityMode != activeCfg.polarityMode) {
+                block.copy(
+                    samplingConfiguration = block.samplingConfiguration.copy(
+                        polarity = activeCfg.polarity,
+                        polarityMode = activeCfg.polarityMode
+                    ),
+                    polarity = activeCfg.polarity,
+                    polarityMode = activeCfg.polarityMode
+                )
+            } else {
+                block
+            }
+            _currentBlock.value = effectiveBlock
 
             // Run DSP Pipeline
-            val result = dspPipeline.processBlock(block, _activeProfile.value)
+            val result = dspPipeline.processBlock(effectiveBlock, _activeProfile.value)
             val dspDuration = System.currentTimeMillis() - startMs
             SystemDiagnostics.lastDspDurationMs = dspDuration
 
             _dspResult.value = result
+            if (result.polarityDetectionResult.quality != PolarityDetectionQuality.NONE) {
+                _polarityDetectionResult.value = result.polarityDetectionResult
+            }
 
             // Update rolling history
             val currentScores = _historyScores.value.toMutableList()
@@ -582,6 +608,115 @@ class FelezJooViewModel(application: Application) : AndroidViewModel(application
     fun applyAutoDelay() {
         val candidate = _autoDelayResult.value ?: return
         setDelayTicks(candidate.first)
+    }
+
+    // Polarity Mode & Detection Controls
+    fun setPolarityMode(mode: PolarityMode) {
+        val updatedConfig = _samplingConfig.value.copy(
+            polarityMode = mode,
+            polarity = when (mode) {
+                PolarityMode.POSITIVE -> WaveformPolarity.POSITIVE
+                PolarityMode.NEGATIVE -> WaveformPolarity.NEGATIVE
+                PolarityMode.AUTO -> _samplingConfig.value.polarity
+            }
+        )
+        _samplingConfig.value = updatedConfig
+        protocolParser.updateSamplingConfig(updatedConfig)
+        SystemDiagnostics.info("DSP", "Polarity mode set to ${mode.displayName}")
+
+        // Immediately re-process current block with updated config
+        val current = _currentBlock.value
+        if (current.rawSamples.isNotEmpty()) {
+            val updatedBlock = current.copy(
+                samplingConfiguration = updatedConfig,
+                polarity = updatedConfig.polarity,
+                polarityMode = updatedConfig.polarityMode
+            )
+            _currentBlock.value = updatedBlock
+            val result = dspPipeline.processBlock(updatedBlock, _activeProfile.value)
+            _dspResult.value = result
+            if (result.polarityDetectionResult.quality != PolarityDetectionQuality.NONE) {
+                _polarityDetectionResult.value = result.polarityDetectionResult
+            }
+        }
+    }
+
+    fun setWaveformPolarity(polarity: WaveformPolarity) {
+        val mode = when (polarity) {
+            WaveformPolarity.POSITIVE -> PolarityMode.POSITIVE
+            WaveformPolarity.NEGATIVE -> PolarityMode.NEGATIVE
+        }
+        val updatedConfig = _samplingConfig.value.copy(
+            polarity = polarity,
+            polarityMode = mode
+        )
+        _samplingConfig.value = updatedConfig
+        protocolParser.updateSamplingConfig(updatedConfig)
+        SystemDiagnostics.info("DSP", "Waveform polarity manually set to ${polarity.displayName}")
+
+        val current = _currentBlock.value
+        if (current.rawSamples.isNotEmpty()) {
+            val updatedBlock = current.copy(
+                samplingConfiguration = updatedConfig,
+                polarity = updatedConfig.polarity,
+                polarityMode = updatedConfig.polarityMode
+            )
+            _currentBlock.value = updatedBlock
+            val result = dspPipeline.processBlock(updatedBlock, _activeProfile.value)
+            _dspResult.value = result
+        }
+    }
+
+    fun runPolarityDetection() {
+        val res = _dspResult.value
+        val config = _samplingConfig.value
+        val profile = _activeProfile.value
+        val residual = res?.residualCurve ?: return
+        val dt = if (config.sampleSpacingUs > 0.0) config.sampleSpacingUs else 1.6
+        val (decayStart, decayEnd) = profile.getIntegrationIndices(config)
+        val tailFrac = profile.calibration.tailNoiseFraction
+        val tStart = ((residual.size * tailFrac).toInt()).coerceIn(0, (residual.size - 2).coerceAtLeast(0))
+        val rawNoise = com.example.felezjoo.dsp.NoiseEstimator.estimateNoise(residual, tStart, residual.size)
+
+        val detectionResult = com.example.felezjoo.dsp.PolarityDetector.detectPolarity(
+            rawResidual = residual,
+            dt = dt,
+            startIndex = decayStart,
+            endIndex = decayEnd,
+            noiseFloor = rawNoise.noiseFloor,
+            calibration = profile.calibration
+        )
+        _polarityDetectionResult.value = detectionResult
+        SystemDiagnostics.info(
+            "DSP",
+            "Polarity detection evaluated: ${detectionResult.detectedPolarity?.displayName ?: "UNKNOWN"} (${detectionResult.quality.displayName})"
+        )
+    }
+
+    fun applyDetectedPolarity() {
+        val detected = _polarityDetectionResult.value.detectedPolarity ?: return
+        val updatedConfig = _samplingConfig.value.copy(
+            polarity = detected,
+            polarityMode = when (detected) {
+                WaveformPolarity.POSITIVE -> PolarityMode.POSITIVE
+                WaveformPolarity.NEGATIVE -> PolarityMode.NEGATIVE
+            }
+        )
+        _samplingConfig.value = updatedConfig
+        protocolParser.updateSamplingConfig(updatedConfig)
+        SystemDiagnostics.info("DSP", "Adopted detected polarity: ${detected.displayName}")
+
+        val current = _currentBlock.value
+        if (current.rawSamples.isNotEmpty()) {
+            val updatedBlock = current.copy(
+                samplingConfiguration = updatedConfig,
+                polarity = updatedConfig.polarity,
+                polarityMode = updatedConfig.polarityMode
+            )
+            _currentBlock.value = updatedBlock
+            val result = dspPipeline.processBlock(updatedBlock, _activeProfile.value)
+            _dspResult.value = result
+        }
     }
 
     // Recording & Sessions

@@ -29,6 +29,7 @@ data class SamplingConfiguration(
     val regionCStartUs: Double = 35.0,
     val regionCEndUs: Double = 65.0,
     val polarity: WaveformPolarity = WaveformPolarity.POSITIVE,
+    val polarityMode: PolarityMode = PolarityMode.AUTO,
     val transportOrder: com.example.felezjoo.dsp.EtsTransportOrder = com.example.felezjoo.dsp.EtsTransportOrder.CHRONOLOGICAL,
     val timeOrigin: String = "TX_OFF_PLUS_DELAY"
 ) : Serializable {

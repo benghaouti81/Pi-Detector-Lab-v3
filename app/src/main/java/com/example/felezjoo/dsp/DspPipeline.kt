@@ -5,7 +5,10 @@ import com.example.felezjoo.models.DetectionCalibration
 import com.example.felezjoo.models.DspProfile
 import com.example.felezjoo.models.FeatureVector
 import com.example.felezjoo.models.IntegrationMode
+import com.example.felezjoo.models.PolarityDetectionResult
+import com.example.felezjoo.models.PolarityMode
 import com.example.felezjoo.models.TargetClassification
+import com.example.felezjoo.models.WaveformPolarity
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
@@ -34,7 +37,9 @@ data class DspCalculationResult(
     val lateTauFitResult: TauFitResult = TauFitResult.UNAVAILABLE,
     val isGroundFrozen: Boolean = false,
     val groundFreezeReason: String = "",
-    val postUpdateGroundCurve: DoubleArray = groundCurve
+    val postUpdateGroundCurve: DoubleArray = groundCurve,
+    val polarityDetectionResult: PolarityDetectionResult = PolarityDetectionResult.UNKNOWN,
+    val effectivePolarity: WaveformPolarity = block.polarity
 )
 
 /**
@@ -144,9 +149,38 @@ class DspPipeline {
         // 4. Residual Curve: RESIDUAL(t) = X(t) - GROUND(t)
         val rawResidual = DoubleArray(count) { i -> airCompensated[i] - activeGround[i] }
 
-        // 5. Polarity Normalization:
-        // Inverting AFEs deflect downward; normalize so that eddy current decays are positive
-        val polaritySign = block.polarity.sign
+        // 5. Polarity Detection & Normalization:
+        // Assess raw residual using decay window to detect AFE polarity without Target ID/VDI assumptions
+        val (decayStart, decayEnd) = profile.getIntegrationIndices(config)
+        val tailFrac = profile.calibration.tailNoiseFraction
+        val tStart = ((count * tailFrac).toInt()).coerceIn(0, (count - 2).coerceAtLeast(0))
+        val rawNoiseEstimate = NoiseEstimator.estimateNoise(rawResidual, tStart, count)
+        val polarityDetection = PolarityDetector.detectPolarity(
+            rawResidual = rawResidual,
+            dt = dt,
+            startIndex = decayStart,
+            endIndex = decayEnd,
+            noiseFloor = rawNoiseEstimate.noiseFloor,
+            calibration = profile.calibration
+        )
+
+        // Resolve effective polarity based on PolarityMode:
+        // - POSITIVE: Explicitly forces +1.0
+        // - NEGATIVE: Explicitly forces -1.0
+        // - AUTO: Uses detected polarity if reliable; otherwise retains block.polarity (safe fallback)
+        val effectivePolarity = when (block.polarityMode) {
+            PolarityMode.POSITIVE -> WaveformPolarity.POSITIVE
+            PolarityMode.NEGATIVE -> WaveformPolarity.NEGATIVE
+            PolarityMode.AUTO -> {
+                if (polarityDetection.isReliable && polarityDetection.detectedPolarity != null) {
+                    polarityDetection.detectedPolarity
+                } else {
+                    block.polarity
+                }
+            }
+        }
+
+        val polaritySign = effectivePolarity.sign
         val normalizedResidual = DoubleArray(count) { i -> rawResidual[i] * polaritySign }
 
         // 6. Dual Signal Paths
@@ -494,7 +528,9 @@ class DspPipeline {
             lateTauFitResult = lateTauResult,
             isGroundFrozen = groundAdaptationStatus.isFrozen,
             groundFreezeReason = groundAdaptationStatus.freezeReason,
-            postUpdateGroundCurve = finalGroundSnapshot
+            postUpdateGroundCurve = finalGroundSnapshot,
+            polarityDetectionResult = polarityDetection,
+            effectivePolarity = effectivePolarity
         )
     }
 
