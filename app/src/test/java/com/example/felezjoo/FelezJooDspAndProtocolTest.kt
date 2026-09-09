@@ -749,6 +749,147 @@ class FelezJooDspAndProtocolTest {
     }
 
     @Test
+    fun testTauEstimatorNegativeOutlierRejection() {
+        // Physical parameters:
+        // True eddy decay: V(t) = A0 * exp(-t / trueTau)
+        // trueTau = 20.0 us, dt = 1.6 us (Leonardo ETS phase spacing)
+        val trueTau = 20.0
+        val dt = 1.6
+        val sampleCount = 45
+        val a0 = 300.0
+        val startIndex = 4
+        val endIndex = 36
+        val expectedInitialCandidates = endIndex - startIndex // 32 samples
+
+        val noiseFloor = 1.0
+        val noiseMultiplier = 2.0
+        val minThreshold = kotlin.math.max(noiseFloor * noiseMultiplier, 1.0) // 2.0
+
+        // 1. Clean exponential decay waveform
+        val clean = DoubleArray(sampleCount) { i ->
+            val t = i * dt
+            a0 * kotlin.math.exp(-t / trueTau)
+        }
+
+        val rClean = TauEstimator.estimateTau(
+            waveform = clean,
+            sampleSpacingUs = dt,
+            startIndex = startIndex,
+            endIndex = endIndex,
+            noiseFloor = noiseFloor,
+            noiseThresholdMultiplier = noiseMultiplier
+        )
+        assertTrue("Clean decay must be successfully fitted", rClean.isAvailable)
+        assertEquals("Clean decay tau must match true tau (20.0 us) within 0.2 us", trueTau, rClean.tauUs, 0.2)
+        assertTrue("Clean decay R^2 must be near 1.0", rClean.rSquared > 0.999)
+        assertEquals("Clean decay must use all candidate samples in window", expectedInitialCandidates, rClean.fitSampleCount)
+
+        // 2. Corrupt waveform with a downward glitch (negative outlier relative to the decay curve)
+        // In pulse induction physics, eddy current responses are positive after AFE polarity normalization.
+        // A negative spike (downward disturbance / glitch) in the decay curve represents a sharp drop in amplitude.
+        // We select sample index 18 (in the middle of the fitting window, physical time = 28.8 us).
+        val glitchIndex = 18
+        val corrupted = clean.clone()
+        val cleanValAtGlitch = clean[glitchIndex] // ~71.07
+        // Apply a severe downward deflection (drop from ~71.07 to ~17.77, a negative delta of -53.30)
+        corrupted[glitchIndex] = cleanValAtGlitch * 0.25
+
+        // CRITICAL CHECK: Ensure the negative outlier strictly exceeds the noise threshold (> 2.0).
+        // This guarantees that the sample is NOT excluded by pre-regression thresholding, but instead
+        // ENTERS the first regression pass, where its large negative residual must be caught by
+        // the 2.5 * RMSE outlier rejection criterion.
+        assertTrue(
+            "Corrupted negative outlier (${corrupted[glitchIndex]}) must strictly exceed the noise threshold ($minThreshold)",
+            corrupted[glitchIndex] > minThreshold
+        )
+
+        // 3. Mathematical proof of outlier impact without rejection:
+        // If all 32 samples were fitted without outlier rejection, log-linear fit would be distorted:
+        var sumT = 0.0
+        var sumLogV = 0.0
+        val n = expectedInitialCandidates
+        for (i in startIndex until endIndex) {
+            val t = i * dt
+            val lv = kotlin.math.ln(corrupted[i])
+            sumT += t
+            sumLogV += lv
+        }
+        val meanT = sumT / n
+        val meanLogV = sumLogV / n
+        var ssTt = 0.0
+        var ssTLogV = 0.0
+        var ssLogV = 0.0
+        for (i in startIndex until endIndex) {
+            val t = i * dt
+            val lv = kotlin.math.ln(corrupted[i])
+            ssTt += (t - meanT) * (t - meanT)
+            ssTLogV += (t - meanT) * (lv - meanLogV)
+            ssLogV += (lv - meanLogV) * (lv - meanLogV)
+        }
+        val unprunedSlope = ssTLogV / ssTt
+        val unprunedIntercept = meanLogV - unprunedSlope * meanT
+        var ssRes = 0.0
+        for (i in startIndex until endIndex) {
+            val t = i * dt
+            val lv = kotlin.math.ln(corrupted[i])
+            val pred = unprunedIntercept + unprunedSlope * t
+            ssRes += (lv - pred) * (lv - pred)
+        }
+        val unprunedR2 = 1.0 - (ssRes / ssLogV)
+        val unprunedRmse = kotlin.math.sqrt(ssRes / n)
+        val glitchTime = glitchIndex * dt
+        val glitchLogV = kotlin.math.ln(corrupted[glitchIndex])
+        val glitchAbsResidual = kotlin.math.abs(glitchLogV - (unprunedIntercept + unprunedSlope * glitchTime))
+
+        // Prove that the unpruned R^2 is degraded
+        assertTrue("Without outlier rejection, R^2 is noticeably degraded (< 0.95)", unprunedR2 < 0.95)
+        // Prove that the negative outlier residual exceeds 2.5 * RMSE
+        assertTrue(
+            "Glitch residual ($glitchAbsResidual) must exceed 2.5 * RMSE (${2.5 * unprunedRmse})",
+            glitchAbsResidual > (2.5 * unprunedRmse)
+        )
+
+        // 4. Run TauEstimator on the corrupted waveform:
+        val rCorrupted = TauEstimator.estimateTau(
+            waveform = corrupted,
+            sampleSpacingUs = dt,
+            startIndex = startIndex,
+            endIndex = endIndex,
+            noiseFloor = noiseFloor,
+            noiseThresholdMultiplier = noiseMultiplier
+        )
+
+        // 5. Verification of successful outlier detection and pruning:
+        // A. Fit must succeed (isAvailable == true)
+        assertTrue("Tau fit must remain available after negative outlier rejection", rCorrupted.isAvailable)
+
+        // B. Exactly one sample (the negative outlier) must have been pruned (32 -> 31)
+        assertEquals(
+            "Outlier rejection must prune exactly the single corrupted negative outlier sample",
+            expectedInitialCandidates - 1,
+            rCorrupted.fitSampleCount
+        )
+
+        // C. Tau must recover to true tau (20.0 us) within strict tolerance (< 0.5 us)
+        assertEquals(
+            "Tau after negative outlier rejection must match true tau within 0.5 us",
+            trueTau,
+            rCorrupted.tauUs,
+            0.5
+        )
+
+        // D. R^2 must remain high (>= 0.85, and in fact > 0.99 for recovered noiseless decay)
+        assertTrue(
+            "R^2 must be high after negative outlier rejection (actual: ${rCorrupted.rSquared})",
+            rCorrupted.rSquared >= 0.85
+        )
+        assertTrue(
+            "Recovered R^2 must exceed 0.99",
+            rCorrupted.rSquared > 0.99
+        )
+    }
+
+    @Test
     fun testMultiFrameTemporalGroundTrackingSequence() {
         val dt = 1.6
         val sampleCount = 70
