@@ -49,7 +49,10 @@ data class DspCalculationResult(
  * 6. Scientific Tau estimation via multi-point log-linear regression (no arbitrary formulas).
  * 7. Multi-zone Safe Ground Tracking with freeze protection on target detection.
  * 8. Real noise estimation via Median Absolute Deviation (MAD) and difference noise.
- * 9. Target ID unavailable until a calibrated labelled dataset/model exists (objective classification without fake numbers).
+ * 9. Deterministic DSP feature extraction and heuristic detection/classification.
+ *    - Target ID is unavailable (targetId = 0, isTargetIdCalibrated = false) until a calibrated labelled dataset/model exists.
+ *    - Ferrous/material indication (ironScore) is an uncalibrated heuristic material metric.
+ *    - confidenceScore is an engineering heuristic metric (0..100), not a calibrated probability.
  */
 class DspPipeline {
 

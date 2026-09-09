@@ -146,7 +146,7 @@ object TauEstimator {
                 }
             }
 
-            // Outlier criterion: residual error exceeds 2.5 standard errors, and remaining points satisfy minSamples
+            // Outlier criterion: residual error exceeds 2.5 × fit RMSE residual threshold, and remaining points satisfy minSamples
             if (worstIdx != -1 && maxAbsRes > (2.5 * firstFit.rmse) && (times.size - 1 >= minSamples)) {
                 val prunedTimes = mutableListOf<Double>()
                 val prunedLogs = mutableListOf<Double>()

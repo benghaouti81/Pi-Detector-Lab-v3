@@ -705,12 +705,20 @@ class FelezJooDspAndProtocolTest {
         assertTrue("C: Positive spike must be handled by outlier rejection", rPosSpike.isAvailable)
         assertEquals("C: Tau after positive spike rejection must match true tau within 2.0 us", trueTau, rPosSpike.tauUs, 2.0)
 
-        // D. Exponential with one strong negative disturbance (well above noise floor)
+        // D. Exponential with one significant negative outlier (guaranteed above noise threshold to test outlier rejection)
         val negativeSpike = clean.clone()
-        negativeSpike[14] = negativeSpike[14] * 0.25 // strong downward glitch
-        val rNegSpike = TauEstimator.estimateTau(negativeSpike, dt, startIndex = 4, endIndex = 35, noiseFloor = 1.0)
-        assertTrue("D: Negative disturbance must be handled by outlier rejection", rNegSpike.isAvailable)
-        assertEquals("D: Tau after negative glitch rejection must match true tau within 2.5 us", trueTau, rNegSpike.tauUs, 2.5)
+        val spikeIdx = 14
+        val noiseFloorD = 1.0
+        val noiseMultD = 2.0
+        val minThresholdD = kotlin.math.max(noiseFloorD * noiseMultD, 1.0)
+        negativeSpike[spikeIdx] = negativeSpike[spikeIdx] * 0.35 // Significant negative outlier: 102.05 * 0.35 = 35.72 > threshold (2.0)
+        assertTrue("Corrupted sample must strictly exceed the noise threshold to enter regression candidate set", negativeSpike[spikeIdx] > minThresholdD)
+
+        val rNegSpike = TauEstimator.estimateTau(negativeSpike, dt, startIndex = 4, endIndex = 35, noiseFloor = noiseFloorD)
+        assertTrue("D: Negative outlier must be handled by RMSE outlier rejection", rNegSpike.isAvailable)
+        // With 31 points and 1 pruned outlier, fitSampleCount must be 30
+        assertEquals("D: Outlier rejection must prune exactly the single corrupted sample", 30, rNegSpike.fitSampleCount)
+        assertEquals("D: Tau after negative outlier rejection must match true tau within 1.0 us", trueTau, rNegSpike.tauUs, 1.0)
 
         // E. Insufficient valid samples (< minSamples)
         val rFew = TauEstimator.estimateTau(clean, dt, startIndex = 4, endIndex = 6, noiseFloor = 1.0, minSamples = 4)
