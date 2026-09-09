@@ -1123,12 +1123,28 @@ static void timer3Init()
 static void adcInit()
 {
     /*
-     * AVcc reference.
+     * ATmega32U4
      *
-     * ADC7 = A0.
+     * ADC7 = A0
+     *
+     * Reference = AVcc
+     * Result = right adjusted
      */
+
     ADMUX = 0;
 
+    /*
+     * AVcc reference.
+     *
+     * REFS1:REFS0 = 01
+     */
+    ADMUX |= _BV(REFS0);
+
+    /*
+     * ADC7
+     *
+     * MUX[3:0] = 0111
+     */
     ADMUX |=
         _BV(MUX2) |
         _BV(MUX1) |
@@ -1141,6 +1157,14 @@ static void adcInit()
         ~_BV(ADLAR);
 
     /*
+     * ATmega32U4 has MUX5 in ADCSRB.
+     *
+     * For ADC7 it must be 0.
+     */
+    ADCSRB &= (uint8_t)
+        ~_BV(MUX5);
+
+    /*
      * Disable digital input on ADC7.
      */
     DIDR0 |= _BV(ADC7D);
@@ -1148,24 +1172,25 @@ static void adcInit()
     /*
      * ADC clock:
      *
-     * 16 MHz / 16 = 1 MHz.
+     * 16 MHz / 16 = 1 MHz
      */
     ADCSRA = 0;
 
     ADCSRA |= _BV(ADPS2);
 
+    /*
+     * Enable ADC.
+     */
     ADCSRA |= _BV(ADEN);
 
     /*
-     * IMPORTANT:
-     *
      * Auto trigger disabled.
      */
     ADCSRA &= (uint8_t)
         ~_BV(ADATE);
 
     /*
-     * ADC interrupt disabled until acquisition starts.
+     * ADC interrupt disabled until acquisition.
      */
     ADCSRA &= (uint8_t)
         ~_BV(ADIE);
